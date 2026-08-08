@@ -1,4 +1,4 @@
-import { uid } from "../utils.js";
+import { normalizeText, uid } from "../utils.js";
 import { createMoney, parseMoneyInput } from "../domain/money.js";
 import { parseSpanishDate } from "../domain/deadline.js";
 
@@ -7,11 +7,63 @@ function matchFirst(pattern, text) {
   return match ? match[1].trim() : "";
 }
 
+function firstMeaningfulLine(text) {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length >= 6) ?? "";
+}
+
+function inspectImportText(text = "") {
+  const normalized = normalizeText(text);
+  const firstLine = firstMeaningfulLine(text);
+  const wordCount = normalized ? normalized.split(" ").filter(Boolean).length : 0;
+  return {
+    firstLine,
+    wordCount,
+    hasAmount: /€\s?[\d\.\,]+/.test(text),
+    hasDeadline: /\d{2}\/\d{2}\/\d{4}(?:\s*(?:at|a las)?\s*\d{1,2}:\d{2})?/i.test(text),
+    hasLocation: /(tarragona|barcelona|girona|lleida|catalonia|cataluna|catalunya)/i.test(text),
+    mentionsOpportunityType: /(contract|grant|subsid|ayuda|subvencion|licitacion|tender)/i.test(text)
+  };
+}
+
+export function validateOpportunityImport({
+  sourceText = "",
+  title = "",
+  type = "",
+  location = "",
+  valueText = "",
+  deadlineText = "",
+  noticeUrl = ""
+} = {}) {
+  const sourceSignals = inspectImportText(sourceText);
+  const meaningfulTitle = title.trim().length >= 6;
+  const structuredDetailCount = [location.trim(), valueText.trim(), deadlineText.trim(), noticeUrl.trim()].filter(Boolean).length;
+  const hasUsefulSourceText =
+    Boolean(sourceSignals.firstLine) &&
+    sourceSignals.wordCount >= 8 &&
+    (sourceSignals.hasAmount || sourceSignals.hasDeadline || sourceSignals.hasLocation || sourceSignals.mentionsOpportunityType);
+  const hasMeaningfulManualEntry = meaningfulTitle && Boolean(type) && structuredDetailCount >= 1;
+
+  if (hasUsefulSourceText || hasMeaningfulManualEntry) {
+    return {
+      ok: true
+    };
+  }
+
+  return {
+    ok: false,
+    message:
+      "Add useful source text, or provide a meaningful title plus the opportunity type and at least one substantive detail such as value, deadline, location, or notice URL."
+  };
+}
+
 export function importOpportunityFromText(text) {
   const lower = text.toLowerCase();
   const amountMatch = text.match(/€\s?([\d\.\,]+)/);
   const deadlineMatch = text.match(/\d{2}\/\d{2}\/\d{4}(?:\s*(?:at|a las)?\s*\d{1,2}:\d{2})?/i);
-  const title = matchFirst(/title:\s*(.+)/i, text) || text.split("\n")[0].slice(0, 120) || "Imported opportunity";
+  const title = matchFirst(/title:\s*(.+)/i, text) || firstMeaningfulLine(text).slice(0, 120) || "Manual opportunity";
   const type = /subsid|grant|ayuda|subvencion/i.test(lower) ? "grant" : "contract";
   const deadline = deadlineMatch ? parseSpanishDate(deadlineMatch[0]) : null;
   const amount = amountMatch ? parseMoneyInput(amountMatch[1], { amountType: type === "grant" ? "maximum_grant" : "estimated_value" }) : null;

@@ -196,6 +196,16 @@ button {
   border: 1px solid rgba(13, 92, 99, 0.12);
 }
 
+.prospect-banner {
+  background: linear-gradient(135deg, rgba(184, 137, 45, 0.12), rgba(13, 92, 99, 0.08));
+  border-color: rgba(184, 137, 45, 0.2);
+}
+
+.prospect-banner strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
 .page-grid,
 .stack {
   display: grid;
@@ -349,19 +359,22 @@ button {
 }
 
 .clickable,
+.opportunity-card,
 .mini-list-item,
 .ghost-button,
 .button-primary,
 .nav-item,
-.full-card-hit,
+.scope-button,
 .tab-button {
   transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease, background 180ms ease;
 }
 
 .clickable:hover,
+.opportunity-card:hover,
 .mini-list-item:hover,
 .ghost-button:hover,
 .button-primary:hover,
+.scope-button:hover,
 .tab-button:hover {
   transform: translateY(-2px);
 }
@@ -399,6 +412,37 @@ button {
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 18px;
+}
+
+.scope-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.scope-button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  min-height: 46px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scope-button strong {
+  min-width: 26px;
+  text-align: center;
+  color: var(--teal-deep);
+}
+
+.scope-button.active {
+  background: rgba(13, 92, 99, 0.12);
+  border-color: rgba(13, 92, 99, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(13, 92, 99, 0.12);
 }
 
 .toolbar label,
@@ -458,10 +502,17 @@ textarea {
   gap: 14px;
 }
 
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .opportunity-card,
 .question-card,
 .evidence-item,
-.price-card {
+.price-card,
+.profile-datum {
   position: relative;
   padding: 18px;
   border: 1px solid var(--line);
@@ -469,10 +520,55 @@ textarea {
   background: var(--surface-strong);
 }
 
+.profile-datum {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-datum strong,
+.profile-datum p,
+.profile-datum small {
+  margin: 0;
+}
+
+.profile-datum p,
+.profile-datum small,
+.question-why,
+.form-help,
+.source-card small {
+  color: var(--ink-soft);
+}
+
+.question-why,
+.form-help {
+  display: block;
+  line-height: 1.5;
+}
+
+.opportunity-card {
+  cursor: pointer;
+  outline: none;
+}
+
+.opportunity-card:hover {
+  border-color: rgba(13, 92, 99, 0.22);
+  box-shadow: var(--shadow-md);
+}
+
+.opportunity-card:focus-visible {
+  border-color: rgba(13, 92, 99, 0.38);
+  box-shadow:
+    0 0 0 3px rgba(13, 92, 99, 0.16),
+    var(--shadow-md);
+}
+
 .opportunity-card.selected,
 .mini-list-item.selected {
   border-color: rgba(13, 92, 99, 0.35);
-  box-shadow: inset 0 0 0 1px rgba(13, 92, 99, 0.18);
+  background: linear-gradient(180deg, rgba(13, 92, 99, 0.06), rgba(255, 252, 247, 0.96));
+  box-shadow:
+    inset 0 0 0 1px rgba(13, 92, 99, 0.18),
+    var(--shadow-md);
 }
 
 .compact {
@@ -480,16 +576,16 @@ textarea {
   color: var(--ink-soft);
 }
 
-.full-card-hit {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  background: transparent;
-  border-radius: inherit;
+.card-footer {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
 }
 
-.opportunity-card > *:not(.full-card-hit) {
-  position: relative;
+.card-affordance {
+  color: var(--teal);
+  font-weight: 700;
+  font-size: 0.92rem;
 }
 
 .mini-list-item,
@@ -526,6 +622,15 @@ textarea {
 .detail-panel {
   display: grid;
   gap: 18px;
+  position: sticky;
+  top: 24px;
+  align-self: start;
+}
+
+.detail-panel .card {
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .detail-stats {
@@ -543,6 +648,42 @@ textarea {
 .detail-section h4 {
   margin: 0 0 10px;
   font-size: 1rem;
+}
+
+.decision-strip {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(13, 92, 99, 0.1), rgba(184, 137, 45, 0.08));
+  border: 1px solid rgba(13, 92, 99, 0.14);
+}
+
+.decision-item {
+  display: grid;
+  gap: 4px;
+}
+
+.decision-item span {
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.decision-item p {
+  margin: 0;
+}
+
+.detail-alert {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(176, 113, 18, 0.08);
+  border: 1px solid rgba(176, 113, 18, 0.14);
+  color: var(--ink);
 }
 
 .tight-list,
@@ -630,6 +771,12 @@ th {
   background: rgba(255, 255, 255, 0.55);
 }
 
+.toast.error {
+  background: rgba(161, 55, 55, 0.1);
+  border-color: rgba(161, 55, 55, 0.16);
+  color: var(--bad);
+}
+
 @media (max-width: 1180px) {
   .split-layout,
   .hero-panel,
@@ -644,7 +791,15 @@ th {
   }
 
   .detail-panel {
+    position: static;
+    top: auto;
+    align-self: stretch;
     order: -1;
+  }
+
+  .detail-panel .card {
+    max-height: none;
+    overflow: visible;
   }
 }
 
@@ -660,6 +815,7 @@ th {
 
   .card-grid.two,
   .card-grid.three,
+  .profile-grid,
   .detail-stats,
   .form-grid {
     grid-template-columns: 1fr;

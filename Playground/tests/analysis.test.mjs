@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 globalThis.window = { OPORTUNEX_RUNTIME: {} };
 
+import { getEvaluationNow } from "../src/clock.js";
 import { getRuntimeConfig } from "../src/config.js";
 import { createDemoState } from "../src/data/demo.js";
 import { analyzePortfolio } from "../src/domain/analysis.js";
@@ -10,12 +11,7 @@ import { analyzePortfolio } from "../src/domain/analysis.js";
 test("prefers relevant lot value over full procedure value", () => {
   const runtime = getRuntimeConfig();
   const state = createDemoState();
-  const portfolio = analyzePortfolio(
-    state.companyProfiles[0],
-    state.opportunities,
-    runtime,
-    new Date("2026-08-07T10:00:00+02:00")
-  );
+  const portfolio = analyzePortfolio(state.companyProfiles[0], state.opportunities, runtime, getEvaluationNow());
   const lotMatch = portfolio.recommended.find((item) => item.opportunityId === "opp-multi-lot-framework");
   assert.equal(lotMatch.displayValueLabel, "€96,000 excl. VAT");
 });
@@ -23,13 +19,24 @@ test("prefers relevant lot value over full procedure value", () => {
 test("does not present programme budget as company amount", () => {
   const runtime = getRuntimeConfig();
   const state = createDemoState();
-  const portfolio = analyzePortfolio(
-    state.companyProfiles[0],
-    state.opportunities,
-    runtime,
-    new Date("2026-08-07T10:00:00+02:00")
-  );
+  const portfolio = analyzePortfolio(state.companyProfiles[0], state.opportunities, runtime, getEvaluationNow());
   const grant = portfolio.recommended.find((item) => item.opportunityId === "opp-efficiency-grant");
   assert.ok(grant.companyAmountLabel.includes("€40,000"));
   assert.ok(!grant.companyAmountLabel.includes("10,000,000"));
+});
+
+test("demo portfolio keeps mutually exclusive opportunity scopes transparent", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const portfolio = analyzePortfolio(state.companyProfiles[0], state.opportunities, runtime, getEvaluationNow());
+
+  assert.equal(portfolio.counts.analysed, 7);
+  assert.equal(portfolio.buckets.allAnalysed.length, 7);
+  assert.equal(portfolio.counts.worthAttention, 3);
+  assert.equal(portfolio.counts.needsVerification, 1);
+  assert.equal(portfolio.counts.notSuitable, 3);
+  assert.equal(
+    portfolio.buckets.worthAttention.length + portfolio.buckets.needsVerification.length + portfolio.buckets.notSuitable.length,
+    7
+  );
 });

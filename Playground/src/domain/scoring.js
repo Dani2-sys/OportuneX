@@ -1,14 +1,15 @@
 import { DEFAULT_RUNTIME } from "../config.js";
 import { clamp, weightedAverage } from "../utils.js";
+import { getCompanyFact, getFactValue } from "./company-profile.js";
 import { deadlineFeasibilityScore } from "./deadline.js";
-import { scoreScaleFit } from "./money.js";
+import { assessScaleFit } from "./money.js";
 import { buildConfidenceShield } from "./evidence.js";
 import { qualificationReadinessScore } from "./eligibility.js";
 
 export function geographicFitScore(company, opportunity) {
   const geography = company.geography ?? {};
   const target = opportunity.location ?? {};
-  const radius = geography.preferredWorkingRadiusKm ?? 100;
+  const radius = getFactValue(getCompanyFact(company, "preferredWorkingRadiusKm"));
   const acceptedRegions = (geography.acceptedRegions ?? []).map((value) => value.toLowerCase());
   if (
     acceptedRegions.length &&
@@ -23,6 +24,8 @@ export function geographicFitScore(company, opportunity) {
   if (sameProvince) return 88;
   if (sameRegion) return 72;
   if (geography.willingToTravel && radius >= 150) return 58;
+  if (geography.willingToTravel && radius != null && radius >= 75) return 48;
+  if (geography.municipality || geography.province || geography.autonomousCommunity) return 25;
   return 25;
 }
 
@@ -97,7 +100,8 @@ export function computeScores({
 export function assembleDimensions(company, opportunity, lot, semantic, eligibility, now = new Date()) {
   const selectedMoney = lot?.value ?? opportunity.maximumAidPerBeneficiary ?? opportunity.relevantValue ?? opportunity.estimatedValue;
   const capabilityFit = semantic.score;
-  const financialScaleFit = scoreScaleFit(company, selectedMoney);
+  const scaleAssessment = assessScaleFit(company, selectedMoney);
+  const financialScaleFit = scaleAssessment.score;
   const subject = {
     ...opportunity,
     ...(lot ?? {}),
@@ -127,6 +131,7 @@ export function assembleDimensions(company, opportunity, lot, semantic, eligibil
   );
   return {
     ...preliminary,
+    scaleAssessment,
     evidenceQuality: confidenceShield.label === "HIGH" ? 90 : confidenceShield.label === "MEDIUM" ? 68 : 38,
     confidenceShield
   };

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { getEvaluationNow } from "../src/clock.js";
 import { getRuntimeConfig } from "../src/config.js";
 import { createDemoState } from "../src/data/demo.js";
 import { evaluationFixtures } from "../src/data/evaluation-fixtures.js";
@@ -11,7 +12,7 @@ globalThis.window = { OPORTUNEX_RUNTIME: {} };
 const runtime = getRuntimeConfig();
 const state = createDemoState();
 const company = state.companyProfiles[0];
-const portfolio = analyzePortfolio(company, state.opportunities, runtime, new Date("2026-08-07T10:00:00+02:00"));
+const portfolio = analyzePortfolio(company, state.opportunities, runtime, getEvaluationNow());
 const evaluation = runEvaluationSuite(evaluationFixtures, runtime);
 
 assert.ok(portfolio.recommended.length >= 3, "expected at least three recommended opportunities");
@@ -32,6 +33,7 @@ console.log(JSON.stringify(
   {
     recommended: portfolio.recommended.length,
     rejected: portfolio.rejected.length,
+    counts: portfolio.counts,
     evaluation: evaluation.summary
   },
   null,

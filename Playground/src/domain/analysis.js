@@ -34,6 +34,7 @@ function buildAdaptiveQuestions(eligibility) {
       question:
         row.question ??
         `Can your company confirm the requirement: ${row.label}?`,
+      why: row.why,
       options: ["Yes", "No", "Unsure", "Add later"]
     }));
 }
@@ -66,9 +67,66 @@ function computeCompanyAmountLabel(opportunity) {
   return "Not a grant";
 }
 
+function fallbackDisplayValueLabel(opportunity) {
+  const value = opportunity.relevantValue ?? opportunity.maximumAidPerBeneficiary ?? opportunity.estimatedValue;
+  return value ? formatMoney(value) : "Value not published";
+}
+
+function fallbackLocationLabel(opportunity) {
+  return (
+    opportunity.location?.display ??
+    [opportunity.location?.municipality, opportunity.location?.province].filter(Boolean).join(", ") ??
+    "Location not published"
+  );
+}
+
+function buildAnalysedItem(outcome) {
+  const bestMatch = outcome.bestMatch;
+  const opportunity = outcome.opportunity;
+  const uiCategory = outcome.rejectedReason
+    ? "not_suitable"
+    : bestMatch?.recommendationClass === "VERIFY_BEFORE_DECIDING"
+      ? "needs_verification"
+      : "worth_attention";
+
+  return {
+    opportunity,
+    opportunityId: opportunity.id,
+    bestMatch,
+    rejectedReason: outcome.rejectedReason,
+    uiCategory,
+    recommendationClass: bestMatch?.recommendationClass ?? "DO_NOT_PURSUE",
+    eligibilityStatus: bestMatch?.eligibilityStatus ?? null,
+    confidenceShield: bestMatch?.confidenceShield ?? null,
+    priorityScore: bestMatch?.priorityScore ?? 0,
+    matchScore: bestMatch?.matchScore ?? 0,
+    displayTitle: bestMatch?.displayTitle ?? opportunity.title,
+    displayValueLabel: bestMatch?.displayValueLabel ?? fallbackDisplayValueLabel(opportunity),
+    companyAmountLabel: bestMatch?.companyAmountLabel ?? computeCompanyAmountLabel(opportunity),
+    locationLabel: bestMatch?.locationLabel ?? fallbackLocationLabel(opportunity),
+    deadlineLabel: bestMatch?.deadlineLabel ?? opportunity.deadline?.sourceText ?? "Not published",
+    executiveVerdict:
+      bestMatch?.executiveVerdict ??
+      outcome.rejectedReason ??
+      "The opportunity is not currently suitable for pursuit.",
+    positives: bestMatch?.positives ?? [],
+    blockers: bestMatch?.blockers ?? [],
+    unknowns: bestMatch?.unknowns ?? [],
+    adaptiveQuestions: bestMatch?.adaptiveQuestions ?? [],
+    requirementRows: bestMatch?.requirementRows ?? [],
+    primaryContact: bestMatch?.primaryContact ?? choosePrimaryContact(opportunity),
+    rankLabel: bestMatch?.rankLabel ?? null,
+    claims: bestMatch?.claims ?? [],
+    reportMarkdown: bestMatch?.reportMarkdown ?? "",
+    lotLabel: bestMatch?.lotLabel ?? opportunity.title,
+    dimensions: bestMatch?.dimensions ?? null,
+    preMortem: bestMatch?.preMortem ?? []
+  };
+}
+
 function analyzeLot(company, opportunity, lot, runtime, now) {
   const semantic = scoreCapabilityFit(company, lot);
-  const eligibility = evaluateEligibility(company, opportunity, lot);
+  const eligibility = evaluateEligibility(company, opportunity, lot, now);
   const dimensions = assembleDimensions(company, opportunity, lot, semantic, eligibility, now);
   const scores = computeScores({ runtime, ...dimensions });
   const recommendationClass = deriveRecommendation({
@@ -131,7 +189,16 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
   if (dimensions.financialScaleFit >= 70) {
     match.positives.push({
       title: "Scale fit",
-      detail: `${match.displayValueLabel} sits inside the company's realistic project range.`
+      detail: dimensions.scaleAssessment?.note ?? `${match.displayValueLabel} sits inside the company's realistic project range.`
+    });
+  }
+  if (dimensions.financialScaleFit < 35) {
+    match.blockers.push({
+      title: "Scale fit concern",
+      detail:
+        dimensions.scaleAssessment?.note ??
+        "The opportunity appears larger than the currently evidenced company delivery capacity.",
+      severity: "medium"
     });
   }
   if (dimensions.deadlineFeasibility >= 70) {
@@ -199,15 +266,6 @@ export function analyzeOpportunity(company, opportunity, runtime, now = new Date
     };
   }
 
-  if (bestMatch.dimensions.financialScaleFit === 0) {
-    return {
-      opportunity: enriched,
-      bestMatch,
-      lotMatches,
-      rejectedReason: "Contract too large"
-    };
-  }
-
   return {
     opportunity: enriched,
     bestMatch,
@@ -240,14 +298,25 @@ export function analyzePortfolio(company, opportunities, runtime, now = new Date
       reason: item.rejectedReason,
       bestMatch: item.bestMatch
     }));
+  const analysedItems = analysed
+    .map((item) => buildAnalysedItem(item))
+    .sort((left, right) => compareDesc(left.priorityScore, right.priorityScore) || left.displayTitle.localeCompare(right.displayTitle));
+  const buckets = {
+    worthAttention: analysedItems.filter((item) => item.uiCategory === "worth_attention"),
+    needsVerification: analysedItems.filter((item) => item.uiCategory === "needs_verification"),
+    notSuitable: analysedItems.filter((item) => item.uiCategory === "not_suitable"),
+    allAnalysed: analysedItems
+  };
   return {
+    analysed: analysedItems,
+    buckets,
     recommended,
     rejected,
     counts: {
       analysed: opportunities.length,
-      worthAttention: recommended.filter((item) =>
-        ["EXCELLENT_FIT", "STRONG_FIT", "POSSIBLE_FIT", "VERIFY_BEFORE_DECIDING"].includes(item.recommendationClass)
-      ).length
+      worthAttention: buckets.worthAttention.length,
+      needsVerification: buckets.needsVerification.length,
+      notSuitable: buckets.notSuitable.length
     }
   };
 }

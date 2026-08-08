@@ -8,21 +8,82 @@ import {
   RECOMMENDATION_COPY,
   STATUS_LABELS
 } from "./config.js";
+import { formatApplicationDate, getApplicationNow, getEvaluationNow } from "./clock.js";
 import { demoCompany } from "./data/demo.js";
 import { evaluationFixtures } from "./data/evaluation-fixtures.js";
 import { analyzePortfolio } from "./domain/analysis.js";
+import {
+  buildCompanyConflicts,
+  buildCompanyUnknowns,
+  computeDecisionProfileCompleteness,
+  describeStatus,
+  formatCompanyFact,
+  formatCompanyRange,
+  getCompanyCapabilities,
+  getCompanyCertifications,
+  getCompanyClassifications,
+  getCompanyFact,
+  getCompanyFactHistory,
+  getCompanyInsurancePolicies,
+  getCompanySources,
+  getEmployeeRange,
+  getFactStatus,
+  getFactValue,
+  getProfileMode,
+  getTurnoverRange,
+  isStalePublicFact,
+  setCertificationDecision,
+  setCompanyConfirmedFact,
+  setCompanyConfirmedRange,
+  setCompanyFactUnknown
+} from "./domain/company-profile.js";
 import { runEvaluationSuite } from "./domain/evaluation.js";
 import { formatDeadline, formatLastChecked, parseSpanishDate, urgencyChip } from "./domain/deadline.js";
 import { formatMoney, parseMoneyInput } from "./domain/money.js";
-import { importOpportunityFromText } from "./services/importer.js";
+import { importCompanyProfileFromJson } from "./services/company-importer.js";
+import { importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
 import { runAiVerification } from "./services/ai-client.js";
 import { clamp, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
 
-const DEMO_NOW = new Date("2026-08-07T10:00:00+02:00");
+const OPPORTUNITY_SCOPES = [
+  { id: "worth_attention", label: "Worth your attention" },
+  { id: "needs_verification", label: "Needs verification" },
+  { id: "not_suitable", label: "Not suitable" },
+  { id: "all_analysed", label: "All analysed" }
+];
+
+const AI_STATUS_COPY = {
+  mock: {
+    shortLabel: "Mock verification",
+    detail: "No live OpenAI requests. Deterministic analysis remains active.",
+    tone: "warn"
+  },
+  configured: {
+    shortLabel: "AI configured",
+    detail: "A usable key is configured, but live connectivity has not been verified yet.",
+    tone: "neutral"
+  },
+  connected: {
+    shortLabel: "AI connected",
+    detail: "A live OpenAI verification request has succeeded for this session.",
+    tone: "good"
+  },
+  unavailable: {
+    shortLabel: "AI unavailable",
+    detail: "Verification is unavailable. Deterministic analysis continues without interruption.",
+    tone: "bad"
+  },
+  error: {
+    shortLabel: "AI unavailable",
+    detail: "The last AI verification attempt failed. Deterministic analysis continues.",
+    tone: "bad"
+  }
+};
 
 const uiState = {
   route: "overview",
   selectedOpportunityId: null,
+  opportunityScope: "worth_attention",
   filterType: "all",
   filterRecommendation: "all",
   sort: "priority",
@@ -30,6 +91,7 @@ const uiState = {
   detailTab: "report",
   aiBusy: false,
   message: "",
+  messageTone: "info",
   draftAnswers: {}
 };
 
@@ -60,14 +122,58 @@ function confidenceTone(label) {
   return "bad";
 }
 
-function getDerived(state, runtime) {
-  const company = getCompany(state);
-  const portfolio = analyzePortfolio(company, state.opportunities, runtime, DEMO_NOW);
-  const savedSet = new Set(state.savedOpportunityIds ?? []);
-  const selectedOpportunityId = uiState.selectedOpportunityId ?? portfolio.recommended[0]?.opportunityId ?? portfolio.rejected[0]?.opportunity.id ?? null;
-  uiState.selectedOpportunityId = selectedOpportunityId;
+function eligibilityTone(label) {
+  if (!label) return "neutral";
+  if (label.includes("INELIGIBLE")) return "bad";
+  if (label.includes("UNCLEAR")) return "warn";
+  return "good";
+}
 
-  const recommended = portfolio.recommended
+function companyStatusTone(status) {
+  if (status === "company_confirmed") return "good";
+  if (status === "public_verified" || status === "public_reported") return "neutral";
+  if (status === "inferred" || status === "unknown") return "warn";
+  return "bad";
+}
+
+function getAiStatusMeta(ai = {}) {
+  return AI_STATUS_COPY[ai.status] ?? AI_STATUS_COPY.unavailable;
+}
+
+function valueNumber(label = "") {
+  return Number(label.replace(/[^\d]/g, "")) || 0;
+}
+
+function deadlineSortValue(item) {
+  return item.opportunity?.deadline?.date ?? "9999-12-31";
+}
+
+function getScopeItems(portfolio) {
+  return {
+    worth_attention: portfolio.buckets.worthAttention,
+    needs_verification: portfolio.buckets.needsVerification,
+    not_suitable: portfolio.buckets.notSuitable,
+    all_analysed: portfolio.buckets.allAnalysed
+  };
+}
+
+function resolveSelectedOpportunityId(currentId, visibleItems, allItems) {
+  if (visibleItems.length) {
+    return visibleItems.find((item) => item.opportunityId === currentId)?.opportunityId ?? visibleItems[0].opportunityId;
+  }
+  if (currentId && allItems.some((item) => item.opportunityId === currentId)) return currentId;
+  return allItems[0]?.opportunityId ?? null;
+}
+
+function getDerived(state, runtime) {
+  const now = getApplicationNow();
+  const company = getCompany(state);
+  const portfolio = analyzePortfolio(company, state.opportunities, runtime, now);
+  const savedSet = new Set(state.savedOpportunityIds ?? []);
+  const scopeItems = getScopeItems(portfolio);
+  const scopedItems = scopeItems[uiState.opportunityScope] ?? scopeItems.worth_attention;
+
+  const visibleMatches = scopedItems
     .filter((item) => (uiState.filterType === "all" ? true : item.opportunity.type === uiState.filterType))
     .filter((item) =>
       uiState.filterRecommendation === "all" ? true : item.recommendationClass === uiState.filterRecommendation
@@ -75,25 +181,35 @@ function getDerived(state, runtime) {
     .filter((item) => (uiState.showSavedOnly ? savedSet.has(item.opportunityId) : true))
     .sort((left, right) => sortMatches(left, right, uiState.sort));
 
-  const selectedRecommended = recommended.find((item) => item.opportunityId === selectedOpportunityId);
-  const selectedRejected = portfolio.rejected.find((item) => item.opportunity.id === selectedOpportunityId);
-  const selectedRaw = state.opportunities.find((item) => item.id === selectedOpportunityId) ?? null;
-  const selected = selectedRecommended ?? selectedRejected ?? null;
+  const selectedOpportunityId = resolveSelectedOpportunityId(
+    uiState.selectedOpportunityId,
+    visibleMatches,
+    portfolio.analysed
+  );
+  uiState.selectedOpportunityId = selectedOpportunityId;
 
-  const allQuestions = recommended
+  const selectedRecommended = portfolio.recommended.find((item) => item.opportunityId === selectedOpportunityId) ?? null;
+  const selectedRejected = portfolio.rejected.find((item) => item.opportunity.id === selectedOpportunityId) ?? null;
+  const selectedAnalysis = portfolio.analysed.find((item) => item.opportunityId === selectedOpportunityId) ?? null;
+  const selectedRaw = state.opportunities.find((item) => item.id === selectedOpportunityId) ?? null;
+  const selected = selectedRecommended ?? selectedRejected ?? selectedAnalysis ?? null;
+
+  const allQuestions = portfolio.recommended
     .flatMap((match) => match.adaptiveQuestions.map((question) => ({ ...question, opportunityId: match.opportunityId })))
     .slice(0, 5);
-  const evaluation = runEvaluationSuite(evaluationFixtures, runtime);
+  const evaluation = runEvaluationSuite(evaluationFixtures, runtime, getEvaluationNow());
 
   return {
+    now,
     company,
     portfolio,
-    recommended,
+    visibleMatches,
     savedSet,
     selected,
     selectedRaw,
     selectedRecommended,
     selectedRejected,
+    selectedAnalysis,
     questions: allQuestions,
     evaluation
   };
@@ -102,16 +218,16 @@ function getDerived(state, runtime) {
 function sortMatches(left, right, mode) {
   switch (mode) {
     case "deadline":
-      return left.deadlineLabel.localeCompare(right.deadlineLabel);
+      return deadlineSortValue(left).localeCompare(deadlineSortValue(right));
     case "match":
-      return right.matchScore - left.matchScore;
+      return (right.matchScore ?? 0) - (left.matchScore ?? 0);
     case "confidence":
-      return (right.confidenceShield.label === "HIGH" ? 2 : right.confidenceShield.label === "MEDIUM" ? 1 : 0) -
-        (left.confidenceShield.label === "HIGH" ? 2 : left.confidenceShield.label === "MEDIUM" ? 1 : 0);
+      return (right.confidenceShield?.label === "HIGH" ? 2 : right.confidenceShield?.label === "MEDIUM" ? 1 : 0) -
+        (left.confidenceShield?.label === "HIGH" ? 2 : left.confidenceShield?.label === "MEDIUM" ? 1 : 0);
     case "value":
-      return parseFloat(right.displayValueLabel.replace(/[^\d]/g, "")) - parseFloat(left.displayValueLabel.replace(/[^\d]/g, ""));
+      return valueNumber(right.displayValueLabel) - valueNumber(left.displayValueLabel);
     default:
-      return right.priorityScore - left.priorityScore;
+      return (right.priorityScore ?? 0) - (left.priorityScore ?? 0);
   }
 }
 
@@ -127,6 +243,198 @@ function statCard(label, value, meta = "") {
       ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
     </article>
   `;
+}
+
+function setMessage(message, tone = "info") {
+  uiState.message = message;
+  uiState.messageTone = tone;
+}
+
+function parseOptionalNumber(value) {
+  const raw = value?.toString().trim() ?? "";
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseOptionalBoolean(value) {
+  if (value === "yes") return true;
+  if (value === "no") return false;
+  return null;
+}
+
+function parseCommaList(value) {
+  return (value?.toString() ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function setConfirmedOrUnknownFact(company, key, value, notes) {
+  if (value == null) {
+    setCompanyFactUnknown(company, key, notes);
+    return;
+  }
+  setCompanyConfirmedFact(company, key, value, { notes });
+}
+
+function setConfirmedOrUnknownRange(company, key, { min, max }, notes) {
+  if (min == null && max == null) {
+    setCompanyFactUnknown(company, key, notes);
+    return;
+  }
+  setCompanyConfirmedRange(
+    company,
+    key,
+    {
+      min,
+      max,
+      currency: "EUR"
+    },
+    { notes }
+  );
+}
+
+function syncLegacyCompanyMirrors(company) {
+  company.geography.preferredWorkingRadiusKm = getFactValue(getCompanyFact(company, "preferredWorkingRadiusKm"));
+  company.preferences.minimumAttractiveProjectValue = getFactValue(getCompanyFact(company, "minimumAttractiveProjectValue"));
+  company.preferences.idealProjectValue = getFactValue(getCompanyFact(company, "idealProjectValue"));
+  company.preferences.maximumRealisticProjectValue = getFactValue(getCompanyFact(company, "maximumRealisticProjectValue"));
+  company.experience.publicProcurementProjects = getFactValue(getCompanyFact(company, "publicProcurementProjects"));
+  company.experience.maximumProjectValue = getFactValue(getCompanyFact(company, "maximumProjectValue"));
+  company.grants.canCoFinance = getFactValue(getCompanyFact(company, "canCoFinance"));
+}
+
+function renderProfileModeBanner(company) {
+  if (getProfileMode(company) !== "prospect") return "";
+  return `
+    <div class="toast prospect-banner">
+      <strong>Prospect profile — built from public information</strong>
+      <p>Some company information has not yet been confirmed by the business. OportuneX distinguishes verified public facts, estimates and unknown information when assessing opportunities.</p>
+    </div>
+  `;
+}
+
+function syncRuntimeAi(runtime, nextAi) {
+  if (!nextAi) return;
+  Object.assign(runtime.ai, nextAi);
+}
+
+function formatRangeMeta(range) {
+  if (!range) return "";
+  if (range.referenceYear != null) return `Reference year ${escapeHtml(String(range.referenceYear))}`;
+  if (range.asOfDate) return `As of ${escapeHtml(formatDate(range.asOfDate))}`;
+  return "";
+}
+
+function formatFactMeta(fact) {
+  if (!fact) return "";
+  if (fact.referenceYear != null) return `Reference year ${escapeHtml(String(fact.referenceYear))}`;
+  if (fact.asOfDate) return `As of ${escapeHtml(formatDate(fact.asOfDate))}`;
+  return "";
+}
+
+function renderProfileDatum({ label, value, status, meta = "", note = "", stale = false }) {
+  return `
+    <article class="profile-datum">
+      <div class="card-topline">
+        ${pill(describeStatus(status), companyStatusTone(status))}
+      </div>
+      <strong>${escapeHtml(label)}</strong>
+      <p>${escapeHtml(value)}</p>
+      ${meta ? `<small>${meta}</small>` : ""}
+      ${stale ? `<small>May be outdated — company confirmation recommended</small>` : ""}
+      ${note ? `<small>${escapeHtml(note)}</small>` : ""}
+    </article>
+  `;
+}
+
+function renderCapabilitySummary(capability) {
+  return `
+    <article class="profile-datum">
+      <div class="card-topline">
+        ${pill(describeStatus(capability.status), companyStatusTone(capability.status))}
+        ${pill(capability.strength ?? capability.level ?? "medium", "neutral")}
+      </div>
+      <strong>${escapeHtml(capability.label)}</strong>
+      <p>${escapeHtml(capability.notes ?? "Capability evidence available for matching.")}</p>
+    </article>
+  `;
+}
+
+function renderOpportunityScopeTabs(derived) {
+  const counts = {
+    worth_attention: derived.portfolio.counts.worthAttention,
+    needs_verification: derived.portfolio.counts.needsVerification,
+    not_suitable: derived.portfolio.counts.notSuitable,
+    all_analysed: derived.portfolio.counts.analysed
+  };
+
+  return `
+    <div class="scope-row" aria-label="Opportunity scope">
+      ${OPPORTUNITY_SCOPES.map(
+        (scope) => `
+          <button
+            class="scope-button ${uiState.opportunityScope === scope.id ? "active" : ""}"
+            data-action="scope"
+            data-scope="${scope.id}"
+          >
+            <span>${escapeHtml(scope.label)}</span>
+            <strong>${counts[scope.id]}</strong>
+          </button>
+        `
+      ).join("")}
+    </div>
+  `;
+}
+
+function renderOpportunityCardPills(item) {
+  const badges = [];
+  if (item.bestMatch) {
+    badges.push(
+      pill(`${item.priorityScore} — ${RECOMMENDATION_COPY[item.recommendationClass] ?? "Not suitable"}`, recommendationTone(item.recommendationClass))
+    );
+  } else {
+    badges.push(pill("Not suitable", "bad"));
+  }
+
+  badges.push(
+    pill(
+      item.eligibilityStatus ? ELIGIBILITY_COPY[item.eligibilityStatus] : "Eligibility not assessed",
+      eligibilityTone(item.eligibilityStatus)
+    )
+  );
+  badges.push(
+    pill(
+      item.confidenceShield ? CONFIDENCE_COPY[item.confidenceShield.label] : "Confidence pending",
+      confidenceTone(item.confidenceShield?.label)
+    )
+  );
+  return badges.join("");
+}
+
+function decisionActionLabel(match, rejectedReason = null) {
+  if (rejectedReason || ["DO_NOT_PURSUE", "LOW_PRIORITY"].includes(match.recommendationClass)) {
+    return "Do not pursue";
+  }
+  if (match.recommendationClass === "VERIFY_BEFORE_DECIDING") {
+    return match.adaptiveQuestions.length ? "Answer 1 eligibility question first" : "Verify before deciding";
+  }
+  return "Investigate now";
+}
+
+function buildDecisionSummary(match, rejectedReason = null) {
+  return {
+    action: decisionActionLabel(match, rejectedReason),
+    reason:
+      rejectedReason ??
+      match.positives[0]?.detail ??
+      match.executiveVerdict,
+    blocker:
+      match.unknowns[0]?.detail ??
+      match.blockers[0]?.detail ??
+      "No blocking question is currently recorded."
+  };
 }
 
 function renderNavigation(route) {
@@ -173,9 +481,10 @@ function renderOverview(derived) {
           </p>
         </div>
         <div class="hero-metrics">
-          ${statCard("New opportunities analysed", String(derived.portfolio.counts.analysed), "Phase 0 demo set")}
-          ${statCard("Worth attention", String(derived.portfolio.counts.worthAttention), "Recommended or verify")}
-          ${statCard("Rejected with reason", String(derived.portfolio.rejected.length), "Visible in lab")}
+          ${statCard("Analysed", String(derived.portfolio.counts.analysed), "Phase 0 demo set")}
+          ${statCard("Worth attention", String(derived.portfolio.counts.worthAttention), "Actionable now")}
+          ${statCard("Needs verification", String(derived.portfolio.counts.needsVerification), "Critical facts still missing")}
+          ${statCard("Not suitable", String(derived.portfolio.counts.notSuitable), "Visible with reason")}
         </div>
       </div>
 
@@ -192,7 +501,7 @@ function renderOverview(derived) {
                 <p>${escapeHtml(item.executiveVerdict)}</p>
                 <div class="meta-row">
                   <span>${escapeHtml(item.displayValueLabel)}</span>
-                  <span>${escapeHtml(urgencyChip(item.opportunity, DEMO_NOW))}</span>
+                  <span>${escapeHtml(urgencyChip(item.opportunity, derived.now))}</span>
                 </div>
               </article>
             `
@@ -251,6 +560,7 @@ function renderOverview(derived) {
                       (question) => `
                         <article class="question-card">
                           <strong>${escapeHtml(question.question)}</strong>
+                          <small class="question-why">${escapeHtml(question.why ?? "This answer could materially change the decision.")}</small>
                           <div class="answer-row">
                             ${question.options
                               .map(
@@ -376,7 +686,7 @@ function renderFilters() {
 }
 
 function renderOpportunityList(derived) {
-  const matches = derived.recommended;
+  const matches = derived.visibleMatches;
   return `
     <section class="split-layout">
       <div class="stack">
@@ -385,6 +695,7 @@ function renderOpportunityList(derived) {
             <h2>Opportunities</h2>
             <p>Rapid triage with priority, eligibility, confidence and the main unresolved question.</p>
           </div>
+          ${renderOpportunityScopeTabs(derived)}
           ${renderFilters()}
           <div class="opportunity-list">
             ${
@@ -392,19 +703,26 @@ function renderOpportunityList(derived) {
                 ? matches
                     .map(
                       (item) => `
-                        <article class="opportunity-card ${uiState.selectedOpportunityId === item.opportunityId ? "selected" : ""}">
-                          <button class="full-card-hit" data-action="select" data-id="${item.opportunityId}"></button>
+                        <article
+                          class="opportunity-card ${uiState.selectedOpportunityId === item.opportunityId ? "selected" : ""}"
+                          data-action="select"
+                          data-id="${item.opportunityId}"
+                          tabindex="0"
+                          role="button"
+                          aria-label="Open analysis for ${escapeHtml(item.displayTitle)}"
+                        >
                           <div class="card-topline">
-                            ${pill(`${item.priorityScore} — ${RECOMMENDATION_COPY[item.recommendationClass]}`, recommendationTone(item.recommendationClass))}
-                            ${pill(ELIGIBILITY_COPY[item.eligibilityStatus], item.eligibilityStatus.includes("INELIGIBLE") ? "bad" : item.eligibilityStatus.includes("UNCLEAR") ? "warn" : "good")}
-                            ${pill(CONFIDENCE_COPY[item.confidenceShield.label], confidenceTone(item.confidenceShield.label))}
+                            ${renderOpportunityCardPills(item)}
                           </div>
                           <h3>${escapeHtml(item.displayTitle)}</h3>
-                          <p class="compact">${escapeHtml(item.displayValueLabel)} · ${escapeHtml(urgencyChip(item.opportunity, DEMO_NOW))}</p>
+                          <p class="compact">${escapeHtml(item.displayValueLabel)} · ${escapeHtml(urgencyChip(item.opportunity, derived.now))}</p>
                           <p>${escapeHtml(item.executiveVerdict)}</p>
                           <div class="meta-row">
-                            <span>Why: ${escapeHtml(item.positives[0]?.title ?? "Needs deeper review")}</span>
-                            <span>Main question: ${escapeHtml(item.unknowns[0]?.title ?? item.blockers[0]?.title ?? "None")}</span>
+                            <span>Why: ${escapeHtml(item.positives[0]?.title ?? item.rejectedReason ?? "Needs deeper review")}</span>
+                            <span>Main question: ${escapeHtml(item.unknowns[0]?.title ?? item.blockers[0]?.title ?? item.rejectedReason ?? "None")}</span>
+                          </div>
+                          <div class="card-footer">
+                            <span class="card-affordance">View full analysis →</span>
                           </div>
                           <div class="action-row">
                             <button class="ghost-button" data-action="save" data-id="${item.opportunityId}">
@@ -421,7 +739,7 @@ function renderOpportunityList(derived) {
                       `
                     )
                     .join("")
-                : `<p class="empty-state">No opportunity matches the current filters.</p>`
+                : `<p class="empty-state">No analysed opportunity matches the current scope and filters.</p>`
             }
           </div>
         </article>
@@ -467,14 +785,353 @@ function renderSavedPage(derived) {
 
 function renderCompanyPage(company) {
   const certificationOptions = ["valid", "missing", "unknown"];
+  const profileMode = getProfileMode(company);
+  const completeness = computeDecisionProfileCompleteness(company);
+  const capabilities = getCompanyCapabilities(company);
+  const confirmedCapabilities = capabilities.filter((item) => item.status === "company_confirmed");
+  const publicCapabilities = capabilities.filter((item) => item.status !== "company_confirmed");
+  const certifications = getCompanyCertifications(company);
+  const insurancePolicies = getCompanyInsurancePolicies(company);
+  const employeeFact = getCompanyFact(company, "employeeCountCurrent");
+  const employeeRange = getEmployeeRange(company);
+  const turnoverRange = getTurnoverRange(company);
+  const radiusFact = getCompanyFact(company, "preferredWorkingRadiusKm");
+  const maxProjectFact = getCompanyFact(company, "maximumProjectValue");
+  const minProjectFact = getCompanyFact(company, "minimumAttractiveProjectValue");
+  const idealProjectFact = getCompanyFact(company, "idealProjectValue");
+  const maxRealisticFact = getCompanyFact(company, "maximumRealisticProjectValue");
+  const procurementExperienceFact = getCompanyFact(company, "publicProcurementProjects");
+  const canCoFinanceFact = getCompanyFact(company, "canCoFinance");
+  const employeeHistory = getCompanyFactHistory(company, "employeeCountCurrent");
+  const turnoverHistory = getCompanyFactHistory(company, "turnoverRange");
+  const sources = getCompanySources(company);
+  const conflicts = buildCompanyConflicts(company);
+  const unknowns = buildCompanyUnknowns(company);
+  const cnae = getCompanyClassifications(company, "cnae");
+  const iae = getCompanyClassifications(company, "iae");
+  const cpv = getCompanyClassifications(company, "cpv");
+  const employeeValue = getFactValue(employeeFact);
+  const employeeStatus = getFactStatus(employeeFact);
+  const employeeUsesCurrentLabel = employeeValue != null && employeeStatus === "company_confirmed";
+  const turnoverValue = turnoverRange.min != null || turnoverRange.max != null ? formatCompanyRange(turnoverRange, "money") : "Unknown";
   return `
     <section class="page-grid">
+      <div class="card-grid three">
+        ${statCard("Decision profile completeness", `${completeness.score}%`, completeness.missingFacts[0] ?? "Prospect-safe profile view")}
+        ${statCard("Company sources", String(sources.length), profileMode === "prospect" ? "Public evidence preserved" : "Confirmed company profile")}
+        ${statCard("Visible gaps", String(unknowns.length + conflicts.length), unknowns[0] ?? conflicts[0]?.field ?? "No major gap")}
+      </div>
+      ${
+        profileMode === "prospect"
+          ? `
+              <article class="card">
+                <div class="section-heading">
+                  <h2>Prospect profile</h2>
+                  <p>This company profile was assembled from public information and still needs business confirmation on the most important unknowns.</p>
+                </div>
+              </article>
+            `
+          : ""
+      }
+      <div class="card-grid two">
+        <article class="card">
+          <div class="section-heading">
+            <h2>Identity</h2>
+            <p>Separate legal identity, public classifications, and commercial capabilities.</p>
+          </div>
+          <div class="profile-grid">
+            ${renderProfileDatum({
+              label: "Legal name",
+              value: company.legalName,
+              status: profileMode === "confirmed" ? "company_confirmed" : "public_verified"
+            })}
+            ${renderProfileDatum({
+              label: "Trading name",
+              value: company.tradingName ?? "Unknown",
+              status: profileMode === "confirmed" ? "company_confirmed" : "public_reported"
+            })}
+            ${renderProfileDatum({
+              label: "Operating geography",
+              value: [company.geography.municipality, company.geography.province, company.geography.autonomousCommunity].filter(Boolean).join(", ") || "Unknown",
+              status: profileMode === "confirmed" ? "company_confirmed" : "public_reported"
+            })}
+          </div>
+          <div class="detail-section">
+            <h4>Classification codes</h4>
+            <div class="profile-grid">
+              ${
+                cnae.length
+                  ? cnae
+                      .map((item) =>
+                        renderProfileDatum({
+                          label: "CNAE",
+                          value: item.label ? `${item.code} — ${item.label}` : item.code,
+                          status: item.status,
+                          meta: item.referenceYear ? `Reference year ${item.referenceYear}` : "",
+                          note: item.notes ?? "",
+                          stale: isStalePublicFact(item)
+                        })
+                      )
+                      .join("")
+                  : renderProfileDatum({ label: "CNAE", value: "Unknown", status: "unknown" })
+              }
+              ${
+                iae.length
+                  ? iae
+                      .map((item) =>
+                        renderProfileDatum({
+                          label: "IAE",
+                          value: item.label ? `${item.code} — ${item.label}` : item.code,
+                          status: item.status,
+                          meta: item.referenceYear ? `Reference year ${item.referenceYear}` : "",
+                          note: item.notes ?? "",
+                          stale: isStalePublicFact(item)
+                        })
+                      )
+                      .join("")
+                  : renderProfileDatum({ label: "IAE", value: "Unknown", status: "unknown", note: "CNAE and IAE remain separate until explicitly confirmed." })
+              }
+              ${
+                cpv.length
+                  ? cpv
+                      .map((item) =>
+                        renderProfileDatum({
+                          label: "CPV focus",
+                          value: item.label ? `${item.code} — ${item.label}` : item.code,
+                          status: item.status,
+                          meta: item.referenceYear ? `Reference year ${item.referenceYear}` : "",
+                          note: item.notes ?? "",
+                          stale: isStalePublicFact(item)
+                        })
+                      )
+                      .join("")
+                  : ""
+              }
+            </div>
+          </div>
+        </article>
+        <article class="card">
+          <div class="section-heading">
+            <h2>Business scale</h2>
+            <p>Historical public values stay historical. Unknown never becomes zero or a fictional midpoint.</p>
+          </div>
+          <div class="profile-grid">
+            ${renderProfileDatum({
+              label: employeeUsesCurrentLabel ? "Current employees" : "Reported employees",
+              value: employeeValue != null ? formatCompanyFact(employeeFact) : formatCompanyRange(employeeRange),
+              status: employeeValue != null ? getFactStatus(employeeFact) : getFactStatus(employeeRange),
+              meta: employeeValue != null ? formatFactMeta(employeeFact) : formatRangeMeta(employeeRange),
+              note:
+                employeeUsesCurrentLabel
+                  ? ""
+                  : employeeValue != null
+                    ? "A public or historical employee figure does not prove the current headcount."
+                    : getFactStatus(employeeRange) === "public_reported"
+                      ? "Current headcount is not yet company-confirmed."
+                      : "",
+              stale: employeeValue == null ? isStalePublicFact(employeeRange) : isStalePublicFact(employeeFact)
+            })}
+            ${renderProfileDatum({
+              label: "Reported turnover",
+              value: turnoverValue,
+              status: getFactStatus(turnoverRange),
+              meta: formatRangeMeta(turnoverRange),
+              stale: isStalePublicFact(turnoverRange)
+            })}
+            ${renderProfileDatum({
+              label: "Maximum realistic project capacity",
+              value: formatCompanyFact(maxRealisticFact, "money"),
+              status: getFactStatus(maxRealisticFact),
+              meta: formatFactMeta(maxRealisticFact),
+              stale: isStalePublicFact(maxRealisticFact)
+            })}
+            ${renderProfileDatum({
+              label: "Observed similar-project value",
+              value: formatCompanyFact(maxProjectFact, "money"),
+              status: getFactStatus(maxProjectFact),
+              meta: formatFactMeta(maxProjectFact),
+              stale: isStalePublicFact(maxProjectFact)
+            })}
+            ${renderProfileDatum({
+              label: "Public procurement experience",
+              value: formatCompanyFact(procurementExperienceFact),
+              status: getFactStatus(procurementExperienceFact),
+              meta: formatFactMeta(procurementExperienceFact),
+              stale: isStalePublicFact(procurementExperienceFact)
+            })}
+          </div>
+          ${
+            employeeHistory.length || turnoverHistory.length
+              ? `
+                  <div class="detail-section">
+                    <h4>Provenance history</h4>
+                    <ul class="tight-list">
+                      ${employeeHistory
+                        .map(
+                          (item) =>
+                            `<li>Employees history: ${escapeHtml(formatCompanyFact(item))} · ${escapeHtml(describeStatus(getFactStatus(item)))}${item.referenceYear ? ` · ${escapeHtml(String(item.referenceYear))}` : ""}</li>`
+                        )
+                        .join("")}
+                      ${turnoverHistory
+                        .map(
+                          (item) =>
+                            `<li>Turnover history: ${escapeHtml(formatCompanyRange(item, "money"))} · ${escapeHtml(describeStatus(getFactStatus(item)))}${item.referenceYear ? ` · ${escapeHtml(String(item.referenceYear))}` : ""}</li>`
+                        )
+                        .join("")}
+                    </ul>
+                  </div>
+                `
+              : ""
+          }
+        </article>
+      </div>
+      <div class="card-grid two">
+        <article class="card">
+          <div class="section-heading">
+            <h2>Capabilities</h2>
+            <p>Public website services can strongly support capability fit without proving legal eligibility.</p>
+          </div>
+          <div class="profile-grid">
+            ${confirmedCapabilities.length ? confirmedCapabilities.map(renderCapabilitySummary).join("") : ""}
+            ${publicCapabilities.length ? publicCapabilities.map(renderCapabilitySummary).join("") : ""}
+            ${!capabilities.length ? renderProfileDatum({ label: "Capabilities", value: "Unknown", status: "unknown" }) : ""}
+          </div>
+        </article>
+        <article class="card">
+          <div class="section-heading">
+            <h2>Qualifications & preferences</h2>
+            <p>Current qualifications remain separate from website services and classification codes.</p>
+          </div>
+          <div class="profile-grid">
+            ${certifications.length
+              ? certifications
+                  .map((item) =>
+                    renderProfileDatum({
+                      label: item.name,
+                      value: formatCompanyFact(item.currentStatus),
+                      status: getFactStatus(item.currentStatus),
+                      meta: formatFactMeta(item.currentStatus),
+                      stale: isStalePublicFact(item.currentStatus)
+                    })
+                  )
+                  .join("")
+              : renderProfileDatum({ label: "Certifications", value: "Unknown", status: "unknown" })}
+            ${insurancePolicies.length
+              ? insurancePolicies
+                  .map((item) =>
+                    renderProfileDatum({
+                      label: `${item.name} cover`,
+                      value: formatCompanyFact(item.coverAmountFact, "money"),
+                      status: getFactStatus(item.coverAmountFact),
+                      meta: formatFactMeta(item.coverAmountFact),
+                      stale: isStalePublicFact(item.coverAmountFact)
+                    })
+                  )
+                  .join("")
+              : renderProfileDatum({ label: "Insurance", value: "Unknown", status: "unknown", note: "Insurance evidence remains separate from capability evidence." })}
+            ${renderProfileDatum({
+              label: "Preferred radius",
+              value: getFactValue(radiusFact) != null ? `${formatCompanyFact(radiusFact)} km` : "Unknown",
+              status: getFactStatus(radiusFact),
+              meta: formatFactMeta(radiusFact),
+              stale: isStalePublicFact(radiusFact)
+            })}
+            ${renderProfileDatum({
+              label: "Minimum attractive project value",
+              value: formatCompanyFact(minProjectFact, "money"),
+              status: getFactStatus(minProjectFact),
+              meta: formatFactMeta(minProjectFact),
+              stale: isStalePublicFact(minProjectFact)
+            })}
+            ${renderProfileDatum({
+              label: "Ideal project value",
+              value: formatCompanyFact(idealProjectFact, "money"),
+              status: getFactStatus(idealProjectFact),
+              meta: formatFactMeta(idealProjectFact),
+              stale: isStalePublicFact(idealProjectFact)
+            })}
+            ${renderProfileDatum({
+              label: "Can co-finance grants?",
+              value: formatCompanyFact(canCoFinanceFact, "boolean"),
+              status: getFactStatus(canCoFinanceFact),
+              meta: formatFactMeta(canCoFinanceFact),
+              stale: isStalePublicFact(canCoFinanceFact)
+            })}
+          </div>
+          <div class="detail-section">
+            <h4>Strategic preferences</h4>
+            <ul class="tight-list">
+              <li>Desired work types: ${escapeHtml(company.preferences.desiredWorkTypes.join(", ") || "Unknown")}</li>
+              <li>Unwanted work types: ${escapeHtml(company.preferences.unwantedWorkTypes.join(", ") || "Unknown")}</li>
+            </ul>
+          </div>
+        </article>
+      </div>
+      ${
+        profileMode === "prospect"
+          ? `
+              <div class="card-grid two">
+                <article class="card">
+                  <div class="section-heading">
+                    <h2>Unknown information</h2>
+                    <p>These missing facts matter most for reliable opportunity decisions.</p>
+                  </div>
+                  <ul class="tight-list">
+                    ${unknowns.length ? unknowns.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : `<li>No major unknown recorded.</li>`}
+                  </ul>
+                </article>
+                <article class="card">
+                  <div class="section-heading">
+                    <h2>Source conflicts</h2>
+                    <p>Conflicts remain visible until the company confirms the current fact set.</p>
+                  </div>
+                  <ul class="tight-list">
+                    ${conflicts.length ? conflicts.map((item) => `<li>${escapeHtml(item.field)} — ${escapeHtml(item.detail)}</li>`).join("") : `<li>No source conflict recorded.</li>`}
+                  </ul>
+                </article>
+              </div>
+            `
+          : ""
+      }
+      <article class="card">
+        <div class="section-heading">
+          <h2>Company sources</h2>
+          <p>Source traceability is preserved separately from opportunity evidence.</p>
+        </div>
+        <div class="source-grid">
+          ${
+            sources.length
+              ? sources
+                  .map(
+                    (source) => `
+                      <article class="source-card">
+                        <div class="card-topline">
+                          ${pill(source.sourceType, "neutral")}
+                        </div>
+                        <strong>${escapeHtml(source.organisation)}</strong>
+                        <p>${escapeHtml(source.title)}</p>
+                        <small>${source.publishedAt ? `Published ${escapeHtml(source.publishedAt)}` : "Published date unknown"}${source.retrievedAt ? ` · Retrieved ${escapeHtml(formatLastChecked(source.retrievedAt))}` : ""}</small>
+                      </article>
+                    `
+                  )
+                  .join("")
+              : `<p class="empty-state">No company source has been recorded yet.</p>`
+          }
+        </div>
+      </article>
       <article class="card">
         <div class="section-heading">
           <h2>Company Profile</h2>
-          <p>Structured company capability data drives ranking, hard gates and adaptive questions.</p>
+          <p>Blank current-value fields are stored as unknown. Saving here creates company-confirmed facts without erasing prior public provenance.</p>
         </div>
         <form data-form="company" class="form-grid">
+          <label>
+            Profile mode
+            <select name="profileMode">
+              <option value="confirmed" ${profileMode === "confirmed" ? "selected" : ""}>Confirmed company</option>
+              <option value="prospect" ${profileMode === "prospect" ? "selected" : ""}>Prospect</option>
+            </select>
+          </label>
           <label>
             Legal name
             <input type="text" name="legalName" value="${escapeHtml(company.legalName)}" />
@@ -493,19 +1150,39 @@ function renderCompanyPage(company) {
           </label>
           <label>
             Preferred radius (km)
-            <input type="number" name="radius" value="${company.geography.preferredWorkingRadiusKm}" />
+            <input type="number" name="radius" value="${escapeHtml(getFactValue(radiusFact)?.toString?.() ?? "")}" />
+          </label>
+          <label>
+            Current employees
+            <input type="number" name="employeeCountCurrent" value="${escapeHtml(employeeValue?.toString?.() ?? "")}" />
+          </label>
+          <label>
+            Turnover min
+            <input type="number" name="turnoverMin" value="${escapeHtml(turnoverRange.min?.toString?.() ?? "")}" />
+          </label>
+          <label>
+            Turnover max
+            <input type="number" name="turnoverMax" value="${escapeHtml(turnoverRange.max?.toString?.() ?? "")}" />
           </label>
           <label>
             Minimum attractive project value
-            <input type="number" name="minimumAttractiveProjectValue" value="${company.preferences.minimumAttractiveProjectValue}" />
+            <input type="number" name="minimumAttractiveProjectValue" value="${escapeHtml(getFactValue(minProjectFact)?.toString?.() ?? "")}" />
           </label>
           <label>
             Ideal project value
-            <input type="number" name="idealProjectValue" value="${company.preferences.idealProjectValue}" />
+            <input type="number" name="idealProjectValue" value="${escapeHtml(getFactValue(idealProjectFact)?.toString?.() ?? "")}" />
           </label>
           <label>
             Maximum realistic project value
-            <input type="number" name="maximumRealisticProjectValue" value="${company.preferences.maximumRealisticProjectValue}" />
+            <input type="number" name="maximumRealisticProjectValue" value="${escapeHtml(getFactValue(maxRealisticFact)?.toString?.() ?? "")}" />
+          </label>
+          <label>
+            Public procurement projects
+            <input type="number" name="publicProcurementProjects" value="${escapeHtml(getFactValue(procurementExperienceFact)?.toString?.() ?? "")}" />
+          </label>
+          <label>
+            Largest similar project value
+            <input type="number" name="maximumProjectValue" value="${escapeHtml(getFactValue(maxProjectFact)?.toString?.() ?? "")}" />
           </label>
           <label class="full-span">
             Desired work types
@@ -515,7 +1192,7 @@ function renderCompanyPage(company) {
             Unwanted work types
             <input type="text" name="unwantedWorkTypes" value="${escapeHtml(company.preferences.unwantedWorkTypes.join(", "))}" />
           </label>
-          ${company.certifications
+          ${certifications
             .map(
               (item, index) => `
                 <label>
@@ -524,7 +1201,7 @@ function renderCompanyPage(company) {
                     ${certificationOptions
                       .map(
                         (option) =>
-                          `<option value="${option}" ${item.status === option ? "selected" : ""}>${escapeHtml(option)}</option>`
+                          `<option value="${option}" ${(getFactValue(item.currentStatus) ?? item.status) === option ? "selected" : ""}>${escapeHtml(option)}</option>`
                       )
                       .join("")}
                   </select>
@@ -535,11 +1212,12 @@ function renderCompanyPage(company) {
           <label>
             Can co-finance grant projects?
             <select name="canCoFinance">
-              <option value="yes" ${company.grants.canCoFinance ? "selected" : ""}>Yes</option>
-              <option value="no" ${company.grants.canCoFinance === false ? "selected" : ""}>No</option>
-              <option value="unknown" ${company.grants.canCoFinance == null ? "selected" : ""}>Unknown</option>
+              <option value="yes" ${getFactValue(canCoFinanceFact) === true ? "selected" : ""}>Yes</option>
+              <option value="no" ${getFactValue(canCoFinanceFact) === false ? "selected" : ""}>No</option>
+              <option value="unknown" ${getFactValue(canCoFinanceFact) == null ? "selected" : ""}>Unknown</option>
             </select>
           </label>
+          <p class="form-help full-span">Leave a field blank to keep it explicitly unknown. Saving a current value records a company-confirmed fact while preserving any earlier public provenance in history.</p>
           <div class="form-actions full-span">
             <button class="button-primary" type="submit">Save company profile</button>
           </div>
@@ -595,6 +1273,26 @@ function renderLabPage(derived) {
               <button class="button-primary" type="submit">Create / import opportunity</button>
               <button class="ghost-button" type="button" data-action="reset-demo">Reset demo data</button>
               <button class="ghost-button" type="button" data-action="export-json">Export workspace JSON</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="section-heading">
+            <h3>Prospect profile JSON import</h3>
+            <p>Import a structured prospect profile with provenance, historical values, source conflicts and public capability evidence. Blind benchmark keys are rejected automatically.</p>
+          </div>
+          <form data-form="company-import" class="form-grid">
+            <label class="full-span">
+              Prospect profile JSON
+              <textarea
+                name="companyJson"
+                rows="12"
+                placeholder='{"profileMode":"prospect","legalName":"Example SL","facts":{"employeeCountCurrent":{"value":9,"status":"public_reported","referenceYear":2024,"sourceIds":["src-1"]}}}'
+              ></textarea>
+            </label>
+            <div class="form-actions full-span">
+              <button class="button-primary" type="submit">Import prospect profile</button>
             </div>
           </form>
         </article>
@@ -673,6 +1371,7 @@ function renderLabPage(derived) {
 }
 
 function renderSourcesPage(state, runtime) {
+  const aiStatus = getAiStatusMeta(runtime.ai);
   return `
     <section class="page-grid">
       <article class="card">
@@ -697,10 +1396,19 @@ function renderSourcesPage(state, runtime) {
             .join("")}
           <article class="source-card">
             <div class="card-topline">
-              ${pill("AI adapter", runtime.ai.enabled ? "good" : "warn")}
+              ${pill(aiStatus.shortLabel, aiStatus.tone)}
               ${pill(runtime.ai.provider, "neutral")}
             </div>
-            <p>Server-side scaffold for OpenAI Responses verification keeps secrets out of the client bundle.</p>
+            <p>${escapeHtml(aiStatus.detail)}</p>
+            <small>Verification model ${escapeHtml(runtime.ai.verificationModel ?? "unknown")} · reasoning ${escapeHtml(runtime.ai.reasoningEffort ?? "medium")}</small>
+            <br />
+            <small>
+              ${
+                runtime.ai.lastChecked
+                  ? `Last checked ${escapeHtml(formatLastChecked(runtime.ai.lastChecked))}`
+                  : "No live verification check has completed yet."
+              }
+            </small>
           </article>
         </div>
       </article>
@@ -779,11 +1487,12 @@ function renderEvaluationPage(derived) {
 
 function renderHealthPage(state, runtime, derived) {
   const footprint = Math.round(JSON.stringify(state).length / 1024);
+  const aiStatus = getAiStatusMeta(runtime.ai);
   return `
     <section class="page-grid">
       <div class="card-grid four">
         ${statCard("Companies", String(state.companyProfiles.length))}
-        ${statCard("Opportunities", String(state.opportunities.length))}
+        ${statCard("Analysed", String(derived.portfolio.counts.analysed))}
         ${statCard("Saved", String(state.savedOpportunityIds.length))}
         ${statCard("Local store footprint", `${footprint} KB`)}
       </div>
@@ -795,7 +1504,14 @@ function renderHealthPage(state, runtime, derived) {
         <div class="health-grid">
           <div>
             <strong>AI verification mode</strong>
-            <p>${runtime.ai.enabled ? "Ready for server-side OpenAI verification." : "Mock mode. No API key detected."}</p>
+            <p>${escapeHtml(aiStatus.detail)}</p>
+            ${
+              runtime.ai.lastError
+                ? `<small>${escapeHtml(runtime.ai.lastError)}</small>`
+                : runtime.ai.lastChecked
+                  ? `<small>Last checked ${escapeHtml(formatLastChecked(runtime.ai.lastChecked))}</small>`
+                  : ""
+            }
           </div>
           <div>
             <strong>Connector posture</strong>
@@ -835,7 +1551,7 @@ function renderOpportunityListMini(matches) {
 }
 
 function renderDetailPanel(derived, showDebugger = false) {
-  const selected = derived.selectedRecommended;
+  const selected = derived.selectedRecommended ?? derived.selectedRejected?.bestMatch ?? null;
   const raw = derived.selectedRaw;
   if (!selected || !raw) {
     if (derived.selectedRejected) {
@@ -855,15 +1571,36 @@ function renderDetailPanel(derived, showDebugger = false) {
     return `<aside class="detail-panel"><article class="card"><p class="empty-state">Select an opportunity to inspect its evidence, scoring and professional report.</p></article></aside>`;
   }
 
+  const decision = buildDecisionSummary(selected, derived.selectedRejected?.reason ?? null);
+
   return `
     <aside class="detail-panel">
       <article class="card">
+        <div class="decision-strip">
+          <div class="decision-item">
+            <span>Recommended action</span>
+            <strong>${escapeHtml(decision.action)}</strong>
+          </div>
+          <div class="decision-item">
+            <span>Main reason</span>
+            <p>${escapeHtml(decision.reason)}</p>
+          </div>
+          <div class="decision-item">
+            <span>Main blocker/question</span>
+            <p>${escapeHtml(decision.blocker)}</p>
+          </div>
+        </div>
         <div class="card-topline">
           ${pill(RECOMMENDATION_COPY[selected.recommendationClass], recommendationTone(selected.recommendationClass))}
-          ${pill(ELIGIBILITY_COPY[selected.eligibilityStatus], selected.eligibilityStatus.includes("UNCLEAR") ? "warn" : "good")}
+          ${pill(ELIGIBILITY_COPY[selected.eligibilityStatus], eligibilityTone(selected.eligibilityStatus))}
         </div>
         <h3>${escapeHtml(selected.displayTitle)}</h3>
         <p>${escapeHtml(selected.executiveVerdict)}</p>
+        ${
+          derived.selectedRejected?.reason
+            ? `<div class="detail-alert"><strong>Current outcome:</strong> ${escapeHtml(derived.selectedRejected.reason)}</div>`
+            : ""
+        }
         <div class="detail-stats">
           ${statCard("Match", `${selected.matchScore}/100`)}
           ${statCard("Priority", `${selected.priorityScore}/100`)}
@@ -903,7 +1640,7 @@ function renderReportTab(opportunity, match) {
       <div class="table-scroll">
         <table>
           <thead>
-            <tr><th>Requirement</th><th>Status</th><th>Evidence</th></tr>
+            <tr><th>Requirement</th><th>Status</th><th>Evidence</th><th>Why it matters</th></tr>
           </thead>
           <tbody>
             ${match.requirementRows
@@ -913,6 +1650,7 @@ function renderReportTab(opportunity, match) {
                     <td>${escapeHtml(row.label)}</td>
                     <td>${escapeHtml(row.status)}</td>
                     <td>${escapeHtml(row.evidenceIds.join(", ") || "Not linked")}</td>
+                    <td>${escapeHtml(row.why ?? "Not provided")}</td>
                   </tr>
                 `
               )
@@ -928,6 +1666,7 @@ function renderReportTab(opportunity, match) {
         <li>Potential company amount: ${escapeHtml(match.companyAmountLabel)}</li>
         <li>Duration: ${escapeHtml(opportunity.duration ?? "Not stated")}</li>
         <li>Guarantees: ${escapeHtml(opportunity.guarantees ?? "Not stated")}</li>
+        <li>Scale fit note: ${escapeHtml(match.dimensions?.scaleAssessment?.note ?? "No scale note recorded.")}</li>
       </ul>
     </div>
     <div class="detail-section">
@@ -1012,8 +1751,8 @@ function renderDebugTab(opportunity, match) {
     <div class="detail-section">
       <h4>Scoring dimensions</h4>
       <div class="dimension-grid">
-        ${Object.entries(match.dimensions)
-          .filter(([key]) => key !== "confidenceShield")
+        ${Object.entries(match.dimensions ?? {})
+          .filter(([, value]) => typeof value === "number")
           .map(
             ([key, value]) => `
               <div class="dimension-row">
@@ -1024,6 +1763,13 @@ function renderDebugTab(opportunity, match) {
           )
           .join("")}
       </div>
+    </div>
+    <div class="detail-section">
+      <h4>Scale assessment</h4>
+      <ul class="tight-list">
+        <li>Basis: ${escapeHtml(match.dimensions?.scaleAssessment?.basis ?? "unknown")}</li>
+        <li>${escapeHtml(match.dimensions?.scaleAssessment?.note ?? "No additional note recorded.")}</li>
+      </ul>
     </div>
     <div class="detail-section">
       <h4>Structured claims</h4>
@@ -1041,7 +1787,10 @@ function renderDebugTab(opportunity, match) {
       <h4>AI verification status</h4>
       ${
         aiRun
-          ? `<pre class="debug-pre">${escapeHtml(JSON.stringify(aiRun, null, 2))}</pre>`
+          ? `
+              ${aiRun.error ? `<p>${escapeHtml(aiRun.error.message)}</p>` : ""}
+              <pre class="debug-pre">${escapeHtml(JSON.stringify(aiRun, null, 2))}</pre>
+            `
           : `<p>No AI verification run stored yet. The deterministic engine remains the source of truth in Phase 0.</p>`
       }
     </div>
@@ -1049,21 +1798,26 @@ function renderDebugTab(opportunity, match) {
 }
 
 function layout(content, state, runtime, derived) {
+  const aiStatus = getAiStatusMeta(runtime.ai);
+  const profileMode = getProfileMode(derived.company);
   return `
     <div class="app-shell">
       ${renderNavigation(uiState.route)}
       <main class="main-panel">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Friday, 7 August 2026</p>
+            <p class="eyebrow">${escapeHtml(formatApplicationDate(derived.now))}</p>
             <h2>${escapeHtml(derived.company.legalName)}</h2>
           </div>
           <div class="topbar-actions">
-            ${pill(runtime.ai.enabled ? "AI ready" : "Mock AI mode", runtime.ai.enabled ? "good" : "warn")}
-            ${pill(`${state.opportunities.length} opportunities`, "neutral")}
+            ${pill(aiStatus.shortLabel, aiStatus.tone)}
+            ${pill(profileMode === "prospect" ? "Prospect profile" : "Confirmed company", "neutral")}
+            ${pill(`${derived.portfolio.counts.analysed} analysed`, "neutral")}
+            ${pill(`${derived.portfolio.counts.worthAttention} worth attention`, "neutral")}
           </div>
         </header>
-        ${uiState.message ? `<div class="toast">${escapeHtml(uiState.message)}</div>` : ""}
+        ${uiState.message ? `<div class="toast ${uiState.messageTone === "error" ? "error" : ""}">${escapeHtml(uiState.message)}</div>` : ""}
+        ${renderProfileModeBanner(derived.company)}
         ${content}
       </main>
     </div>
@@ -1128,12 +1882,20 @@ function answerQuestion(store, company, questionId, answer) {
     if (!targetCompany.customAnswers) targetCompany.customAnswers = {};
     targetCompany.customAnswers[questionId] = answer;
     if (questionId.includes("iso9001")) {
-      const certification = targetCompany.certifications.find((item) => item.name === "ISO 9001");
-      if (certification) certification.status = answer === "Yes" ? "valid" : answer === "No" ? "missing" : "unknown";
+      setCertificationDecision(
+        targetCompany,
+        "ISO 9001",
+        answer === "Yes" ? "valid" : answer === "No" ? "missing" : "unknown",
+        { notes: "Recorded from adaptive eligibility question." }
+      );
     }
     if (questionId.includes("iso14001")) {
-      const certification = targetCompany.certifications.find((item) => item.name === "ISO 14001");
-      if (certification) certification.status = answer === "Yes" ? "valid" : answer === "No" ? "missing" : "unknown";
+      setCertificationDecision(
+        targetCompany,
+        "ISO 14001",
+        answer === "Yes" ? "valid" : answer === "No" ? "missing" : "unknown",
+        { notes: "Recorded from adaptive eligibility question." }
+      );
     }
   }, makeAudit("Adaptive answer recorded", `${questionId} → ${answer}`));
 }
@@ -1161,6 +1923,13 @@ export function startApp(root, { runtime, store }) {
       return;
     }
 
+    if (action === "scope") {
+      uiState.opportunityScope = button.dataset.scope;
+      uiState.detailTab = "report";
+      render();
+      return;
+    }
+
     if (action === "select") {
       uiState.selectedOpportunityId = button.dataset.id;
       uiState.detailTab = "report";
@@ -1183,7 +1952,7 @@ export function startApp(root, { runtime, store }) {
         else list.add(id);
         draft.savedOpportunityIds = [...list];
       }, makeAudit("Saved list updated", `Toggled saved state for ${id}`));
-      uiState.message = "Saved opportunities updated.";
+      setMessage("Saved opportunities updated.");
       render();
       return;
     }
@@ -1193,7 +1962,7 @@ export function startApp(root, { runtime, store }) {
       store.update((draft) => {
         draft.pursuitStatuses[id] = "interested";
       }, makeAudit("Pursuit status updated", `Marked ${id} as interested.`));
-      uiState.message = "Marked as interested.";
+      setMessage("Marked as interested.");
       render();
       return;
     }
@@ -1203,44 +1972,44 @@ export function startApp(root, { runtime, store }) {
       store.update((draft) => {
         draft.pursuitStatuses[id] = "not_relevant";
       }, makeAudit("Opportunity feedback updated", `Marked ${id} as not relevant.`));
-      uiState.message = "Marked as not relevant.";
+      setMessage("Marked as not relevant.");
       render();
       return;
     }
 
     if (action === "reset-demo") {
       store.reset();
-      uiState.message = "Demo workspace reset.";
+      setMessage("Demo workspace reset.");
       render();
       return;
     }
 
     if (action === "export-json") {
       exportWorkspace(state);
-      uiState.message = "Workspace exported as JSON.";
+      setMessage("Workspace exported as JSON.");
       render();
       return;
     }
 
     if (action === "download-report") {
-      const match = derived.portfolio.recommended.find((item) => item.opportunityId === button.dataset.id);
+      const match = derived.portfolio.analysed.find((item) => item.opportunityId === button.dataset.id)?.bestMatch ?? null;
       if (match) downloadReport(match);
       return;
     }
 
     if (action === "answer") {
       answerQuestion(store, derived.company, button.dataset.question, button.dataset.answer);
-      uiState.message = "Adaptive answer saved.";
+      setMessage("Adaptive answer saved.");
       render();
       return;
     }
 
     if (action === "ai-verify") {
-      const match = derived.portfolio.recommended.find((item) => item.opportunityId === button.dataset.id);
+      const match = derived.portfolio.analysed.find((item) => item.opportunityId === button.dataset.id)?.bestMatch ?? null;
       const opportunity = state.opportunities.find((item) => item.id === button.dataset.id);
       if (!match || !opportunity) return;
       uiState.aiBusy = true;
-      uiState.message = "Running AI verification pass...";
+      setMessage("Running AI verification pass...");
       render();
       try {
         const result = await runAiVerification({
@@ -1248,22 +2017,49 @@ export function startApp(root, { runtime, store }) {
           opportunity,
           analysis: match
         });
+        syncRuntimeAi(runtime, result.aiRuntime);
         window.__oportunexAiRuns = [
           {
             opportunityId: opportunity.id,
+            completedAt: new Date().toISOString(),
             result
           },
           ...window.__oportunexAiRuns.filter((item) => item.opportunityId !== opportunity.id)
         ];
         uiState.detailTab = "debug";
-        uiState.message = "AI verification run stored.";
+        setMessage("AI verification run stored.");
       } catch (error) {
-        uiState.message = error.message;
+        syncRuntimeAi(runtime, error.aiRuntime);
+        window.__oportunexAiRuns = [
+          {
+            opportunityId: opportunity.id,
+            failedAt: new Date().toISOString(),
+            error: {
+              code: error.code ?? "ai_verification_failed",
+              message: error.message,
+              adminMessage: error.adminMessage ?? error.message
+            }
+          },
+          ...window.__oportunexAiRuns.filter((item) => item.opportunityId !== opportunity.id)
+        ];
+        uiState.detailTab = "debug";
+        setMessage(error.message, "error");
       } finally {
         uiState.aiBusy = false;
         render();
       }
     }
+  });
+
+  root.addEventListener("keydown", (event) => {
+    const card = event.target.closest(".opportunity-card[data-action='select']");
+    if (!card || event.target !== card) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    uiState.selectedOpportunityId = card.dataset.id;
+    uiState.detailTab = "report";
+    if (uiState.route === "overview") uiState.route = "opportunities";
+    render();
   });
 
   root.addEventListener("change", (event) => {
@@ -1283,52 +2079,137 @@ export function startApp(root, { runtime, store }) {
     if (form.dataset.form === "company") {
       store.update((draft) => {
         const company = getCompany(draft);
+        const certifications = getCompanyCertifications(company);
+        company.profileMode = formData.get("profileMode")?.toString() === "prospect" ? "prospect" : "confirmed";
         company.legalName = formData.get("legalName")?.toString() ?? company.legalName;
         company.tradingName = formData.get("tradingName")?.toString() ?? company.tradingName;
         company.geography.municipality = formData.get("municipality")?.toString() ?? company.geography.municipality;
         company.geography.province = formData.get("province")?.toString() ?? company.geography.province;
-        company.geography.preferredWorkingRadiusKm = Number(formData.get("radius") ?? company.geography.preferredWorkingRadiusKm);
-        company.preferences.minimumAttractiveProjectValue = Number(
-          formData.get("minimumAttractiveProjectValue") ?? company.preferences.minimumAttractiveProjectValue
+        company.geography.display =
+          company.geography.municipality || company.geography.province || company.geography.autonomousCommunity || company.geography.display;
+        company.preferences.desiredWorkTypes = parseCommaList(formData.get("desiredWorkTypes"));
+        company.preferences.unwantedWorkTypes = parseCommaList(formData.get("unwantedWorkTypes"));
+
+        setConfirmedOrUnknownFact(company, "preferredWorkingRadiusKm", parseOptionalNumber(formData.get("radius")), "Saved from company profile form.");
+        setConfirmedOrUnknownFact(
+          company,
+          "employeeCountCurrent",
+          parseOptionalNumber(formData.get("employeeCountCurrent")),
+          "Saved from company profile form."
         );
-        company.preferences.idealProjectValue = Number(formData.get("idealProjectValue") ?? company.preferences.idealProjectValue);
-        company.preferences.maximumRealisticProjectValue = Number(
-          formData.get("maximumRealisticProjectValue") ?? company.preferences.maximumRealisticProjectValue
+        setConfirmedOrUnknownRange(
+          company,
+          "turnoverRange",
+          {
+            min: parseOptionalNumber(formData.get("turnoverMin")),
+            max: parseOptionalNumber(formData.get("turnoverMax"))
+          },
+          "Saved from company profile form."
         );
-        company.preferences.desiredWorkTypes = formData
-          .get("desiredWorkTypes")
-          .toString()
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean);
-        company.preferences.unwantedWorkTypes = formData
-          .get("unwantedWorkTypes")
-          .toString()
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean);
-        company.certifications.forEach((item, index) => {
-          item.status = formData.get(`certification-${index}`)?.toString() ?? item.status;
+        setConfirmedOrUnknownFact(
+          company,
+          "minimumAttractiveProjectValue",
+          parseOptionalNumber(formData.get("minimumAttractiveProjectValue")),
+          "Saved from company profile form."
+        );
+        setConfirmedOrUnknownFact(
+          company,
+          "idealProjectValue",
+          parseOptionalNumber(formData.get("idealProjectValue")),
+          "Saved from company profile form."
+        );
+        setConfirmedOrUnknownFact(
+          company,
+          "maximumRealisticProjectValue",
+          parseOptionalNumber(formData.get("maximumRealisticProjectValue")),
+          "Saved from company profile form."
+        );
+        setConfirmedOrUnknownFact(
+          company,
+          "publicProcurementProjects",
+          parseOptionalNumber(formData.get("publicProcurementProjects")),
+          "Saved from company profile form."
+        );
+        setConfirmedOrUnknownFact(
+          company,
+          "maximumProjectValue",
+          parseOptionalNumber(formData.get("maximumProjectValue")),
+          "Saved from company profile form."
+        );
+        certifications.forEach((item, index) => {
+          setCertificationDecision(
+            company,
+            item.name,
+            formData.get(`certification-${index}`)?.toString() ?? "unknown",
+            { notes: "Saved from company profile form." }
+          );
         });
-        const coFinance = formData.get("canCoFinance")?.toString();
-        company.grants.canCoFinance = coFinance === "unknown" ? null : coFinance === "yes";
+        setConfirmedOrUnknownFact(
+          company,
+          "canCoFinance",
+          parseOptionalBoolean(formData.get("canCoFinance")?.toString()),
+          "Saved from company profile form."
+        );
+        syncLegacyCompanyMirrors(company);
       }, makeAudit("Company profile updated", "Saved manual company profile edits."));
-      uiState.message = "Company profile saved.";
+      setMessage("Company profile saved.");
+      render();
+      return;
+    }
+
+    if (form.dataset.form === "company-import") {
+      const jsonText = formData.get("companyJson")?.toString() ?? "";
+      let importedProfile;
+      try {
+        importedProfile = importCompanyProfileFromJson(jsonText);
+      } catch (error) {
+        setMessage(error.message, "error");
+        render();
+        return;
+      }
+
+      store.update((draft) => {
+        const existingIndex = draft.companyProfiles.findIndex((item) => item.id === importedProfile.id);
+        if (existingIndex >= 0) draft.companyProfiles.splice(existingIndex, 1, importedProfile);
+        else draft.companyProfiles.unshift(importedProfile);
+        draft.activeCompanyId = importedProfile.id;
+      }, makeAudit("Prospect profile imported", `Imported ${importedProfile.legalName}.`));
+      uiState.route = "company";
+      setMessage(`Prospect profile imported for ${importedProfile.legalName}.`);
+      form.reset();
       render();
       return;
     }
 
     if (form.dataset.form === "opportunity-import") {
       const sourceText = formData.get("sourceText")?.toString() ?? "";
-      const imported = sourceText ? importOpportunityFromText(sourceText) : importOpportunityFromText(formData.get("title")?.toString() ?? "Manual opportunity");
       const manualTitle = formData.get("title")?.toString().trim();
       const type = formData.get("type")?.toString();
+      const manualValueText = formData.get("value")?.toString() ?? "";
       const manualValue = parseMoneyInput(formData.get("value")?.toString() ?? "", {
         amountType: type === "grant" ? "maximum_grant" : "relevant_lot_value"
       });
       const manualDeadlineText = formData.get("deadline")?.toString().trim();
       const manualLocation = formData.get("location")?.toString().trim();
       const noticeUrl = formData.get("noticeUrl")?.toString().trim();
+      const validation = validateOpportunityImport({
+        sourceText,
+        title: manualTitle,
+        type,
+        location: manualLocation,
+        valueText: manualValueText,
+        deadlineText: manualDeadlineText,
+        noticeUrl
+      });
+
+      if (!validation.ok) {
+        setMessage(validation.message, "error");
+        render();
+        return;
+      }
+
+      const seedText = sourceText || manualTitle;
+      const imported = importOpportunityFromText(seedText);
 
       if (manualTitle) imported.title = manualTitle;
       imported.type = type;
@@ -1362,7 +2243,8 @@ export function startApp(root, { runtime, store }) {
         draft.opportunities.unshift(imported);
       }, makeAudit("Opportunity imported", `Created ${imported.title}.`));
       uiState.selectedOpportunityId = imported.id;
-      uiState.message = "Opportunity imported into the Intelligence Lab.";
+      uiState.detailTab = "report";
+      setMessage("Opportunity imported into the Intelligence Lab.");
       form.reset();
       render();
       return;
@@ -1405,7 +2287,7 @@ export function startApp(root, { runtime, store }) {
           at: new Date().toISOString()
         });
       }, makeAudit("Manual override applied", `${opportunityId}: ${reason}`));
-      uiState.message = "Manual override applied and analysis refreshed.";
+      setMessage("Manual override applied and analysis refreshed.");
       render();
     }
   });

@@ -31,7 +31,10 @@ export function buildPreparationChecklist(opportunity, analysis) {
 export function generateReportMarkdown(company, opportunity, analysis) {
   const checklist = buildPreparationChecklist(opportunity, analysis);
   const rows = analysis.requirementRows
-    .map((row) => `| ${row.label} | ${row.status} | ${row.evidenceIds.join(", ") || "Not linked"} |`)
+    .map(
+      (row) =>
+        `| ${row.label} | ${row.status} | ${row.evidenceIds.join(", ") || "Not linked"} | ${row.why ?? "Not provided"} |`
+    )
     .join("\n");
   const sources = (opportunity.sources ?? [])
     .map(
@@ -48,6 +51,7 @@ export function generateReportMarkdown(company, opportunity, analysis) {
 **Priority:** ${RECOMMENDATION_COPY[analysis.recommendationClass]}  
 **Eligibility:** ${ELIGIBILITY_COPY[analysis.eligibilityStatus]}  
 **Confidence:** ${analysis.confidenceShield.label}  
+**Company profile basis:** ${company.profileMode === "prospect" ? "Prospect profile built from public information" : "Company-confirmed profile"}  
 **Type:** ${OPPORTUNITY_TYPES[opportunity.type]}  
 **Relevant lot:** ${analysis.lotLabel}  
 **Published value:** ${analysis.displayValueLabel}  
@@ -65,8 +69,8 @@ ${analysis.positives.map((item) => `- ${item.title}: ${item.detail}`).join("\n")
 
 ### Eligibility Check
 
-| Requirement | Status | Evidence |
-| --- | --- | --- |
+| Requirement | Status | Evidence | Why It Matters |
+| --- | --- | --- | --- |
 ${rows}
 
 ### Financial Picture
@@ -98,7 +102,7 @@ ${analysis.preMortem.map((item) => `- ${item}`).join("\n")}
 
 ### What OportuneX Still Needs From You
 
-${analysis.adaptiveQuestions.map((item) => `- ${item.question}`).join("\n") || "- No open question."}
+${analysis.adaptiveQuestions.map((item) => `- ${item.question} ${item.why ? `(${item.why})` : ""}`).join("\n") || "- No open question."}
 
 ### How To Pursue
 

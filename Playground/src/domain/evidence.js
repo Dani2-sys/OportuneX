@@ -74,7 +74,7 @@ export function buildConfidenceShield(opportunity, analysis, now = new Date()) {
   const eligibilityConfidence =
     eligibilityConfidenceValue >= 80 ? "HIGH" : eligibilityConfidenceValue >= 55 ? "MEDIUM" : "LOW";
   const label =
-    dataConfidence === "HIGH" && eligibilityConfidence !== "LOW" && conflicts === 0
+    dataConfidence === "HIGH" && eligibilityConfidence === "HIGH" && conflicts === 0
       ? "HIGH"
       : dataConfidence === "LOW" || eligibilityConfidence === "LOW"
         ? "LOW"

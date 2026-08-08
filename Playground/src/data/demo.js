@@ -1,4 +1,5 @@
 import { createMoney } from "../domain/money.js";
+import { createCompanyFact, createCompanyRange, createCompanySource } from "../domain/company-profile.js";
 import { parseSpanishDate } from "../domain/deadline.js";
 
 function source(id, organisation, title, url, publishedAt, lastChecked, official = true) {
@@ -24,11 +25,23 @@ function certificationRequirement(id, label, requiredValue, evidenceIds, questio
 
 export const demoCompany = {
   id: "company-demo",
+  profileMode: "confirmed",
   legalName: "Instalaciones Demo Tarragona SL",
   tradingName: "Instalaciones Demo Tarragona",
   cif: "B00000001",
   preferredLanguage: "es",
   website: "https://instalaciones-demo.example",
+  companySources: [
+    createCompanySource({
+      id: "company-source-intake",
+      organisation: "Instalaciones Demo Tarragona SL",
+      title: "Customer onboarding confirmation",
+      url: "",
+      sourceType: "company_intake",
+      publishedAt: "2026-08-07",
+      retrievedAt: "2026-08-07T08:12:00+02:00"
+    })
+  ],
   geography: {
     municipality: "Tarragona",
     province: "Tarragona",
@@ -46,15 +59,15 @@ export const demoCompany = {
     legalEntityType: "SL"
   },
   capabilities: [
-    { id: "electrical-installation", label: "Electrical installation", level: "high", aliases: [], cpvPrefixes: ["4531", "45311"] },
-    { id: "industrial-electrical", label: "Industrial electrical work", level: "medium", aliases: [], cpvPrefixes: ["45315", "5111"] },
-    { id: "hvac", label: "HVAC and climate systems", level: "high", aliases: [], cpvPrefixes: ["4251", "45331", "5073"] },
-    { id: "solar-pv", label: "Solar PV", level: "high", aliases: [], cpvPrefixes: ["0933", "45261"] },
-    { id: "maintenance", label: "Building and industrial maintenance", level: "high", aliases: [], cpvPrefixes: ["5000", "5071"] }
+    { id: "electrical-installation", label: "Electrical installation", level: "high", strength: "high", status: "company_confirmed", aliases: [], cpvPrefixes: ["4531", "45311"], sourceIds: ["company-source-intake"] },
+    { id: "industrial-electrical", label: "Industrial electrical work", level: "medium", strength: "medium", status: "company_confirmed", aliases: [], cpvPrefixes: ["45315", "5111"], sourceIds: ["company-source-intake"] },
+    { id: "hvac", label: "HVAC and climate systems", level: "high", strength: "high", status: "company_confirmed", aliases: [], cpvPrefixes: ["4251", "45331", "5073"], sourceIds: ["company-source-intake"] },
+    { id: "solar-pv", label: "Solar PV", level: "high", strength: "high", status: "company_confirmed", aliases: [], cpvPrefixes: ["0933", "45261"], sourceIds: ["company-source-intake"] },
+    { id: "maintenance", label: "Building and industrial maintenance", level: "high", strength: "high", status: "company_confirmed", aliases: [], cpvPrefixes: ["5000", "5071"], sourceIds: ["company-source-intake"] }
   ],
   certifications: [
-    { name: "ISO 9001", status: "unknown" },
-    { name: "ISO 14001", status: "missing" }
+    { name: "ISO 9001", status: "unknown", currentStatus: createCompanyFact("unknown", { status: "company_confirmed", confidence: null, sourceIds: ["company-source-intake"], asOfDate: "2026-08-07" }) },
+    { name: "ISO 14001", status: "missing", currentStatus: createCompanyFact("missing", { status: "company_confirmed", confidence: "high", sourceIds: ["company-source-intake"], asOfDate: "2026-08-07" }) }
   ],
   preferences: {
     minimumAttractiveProjectValue: 10000,
@@ -72,11 +85,111 @@ export const demoCompany = {
       "Industrial HVAC retrofit in Tarragona (€180,000)"
     ]
   },
-  insurance: [{ name: "Civil liability", coverAmount: 600000 }],
+  insurance: [{ name: "Civil liability", coverAmount: 600000, coverAmountFact: createCompanyFact(600000, { status: "company_confirmed", confidence: "high", sourceIds: ["company-source-intake"], asOfDate: "2026-08-07" }) }],
   grants: {
     canCoFinance: true,
     minimumWorthwhileSubsidy: 20000,
     deMinimisUsage: "unknown"
+  },
+  classifications: {
+    cnae: [
+      {
+        code: "4321",
+        label: "Electrical installation",
+        status: "company_confirmed",
+        sourceIds: ["company-source-intake"],
+        asOfDate: "2026-08-07"
+      }
+    ],
+    iae: [],
+    cpv: []
+  },
+  facts: {
+    employeeRange: createCompanyRange({
+      min: 10,
+      max: 25,
+      referenceYear: 2026,
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    turnoverRange: createCompanyRange({
+      min: 1000000,
+      max: 2000000,
+      referenceYear: 2026,
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    preferredWorkingRadiusKm: createCompanyFact(100, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    minimumAttractiveProjectValue: createCompanyFact(10000, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    idealProjectValue: createCompanyFact(85000, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    maximumRealisticProjectValue: createCompanyFact(250000, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    publicProcurementProjects: createCompanyFact(1, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    maximumProjectValue: createCompanyFact(220000, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    canCoFinance: createCompanyFact(true, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    deMinimisUsage: createCompanyFact(null, {
+      status: "unknown",
+      confidence: null,
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07",
+      notes: "Customer did not confirm current de minimis usage."
+    }),
+    companyAgeYears: createCompanyFact(11, {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    legalEntityType: createCompanyFact("SL", {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    }),
+    smeStatus: createCompanyFact("confirmed", {
+      status: "company_confirmed",
+      confidence: "high",
+      sourceIds: ["company-source-intake"],
+      asOfDate: "2026-08-07"
+    })
   }
 };
 
@@ -611,7 +724,7 @@ export function createDemoState() {
       {
         id: "audit-seed",
         title: "Demo workspace seeded",
-        detail: "Loaded fictional company profile and six synthetic opportunities.",
+        detail: "Loaded fictional company profile and seven synthetic opportunities.",
         at: "2026-08-07T08:12:00+02:00"
       }
     ],

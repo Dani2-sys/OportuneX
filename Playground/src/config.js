@@ -14,13 +14,16 @@ export const NAV_ITEMS = [
 
 export const DEFAULT_RUNTIME = {
   appName: APP_TITLE,
-  appPhase: "phase-0",
+  appPhase: "phase-0.2",
   ai: {
     provider: "mock",
-    enabled: false,
-    analysisModel: "gpt-5",
-    verificationModel: "gpt-5",
-    extractionModel: "gpt-5"
+    status: "mock",
+    lastChecked: null,
+    lastError: null,
+    analysisModel: "gpt-5.6-terra",
+    verificationModel: "gpt-5.6-terra",
+    extractionModel: "gpt-5.6-luna",
+    reasoningEffort: "medium"
   },
   connectors: {
     placsp: "planned",

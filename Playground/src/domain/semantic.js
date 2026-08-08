@@ -1,4 +1,5 @@
 import { clamp, normalizeText, unique } from "../utils.js";
+import { getCompanyCapabilities } from "./company-profile.js";
 
 export const SERVICE_TAXONOMY = [
   {
@@ -63,7 +64,7 @@ function textHits(capabilities, text) {
 }
 
 export function scoreCapabilityFit(company, subject) {
-  const capabilities = company.capabilities ?? [];
+  const capabilities = getCompanyCapabilities(company);
   const text = normalizeText(
     [subject.title, subject.description, ...(subject.keywords ?? []), ...(subject.sectorTerms ?? [])].join(" ")
   );
@@ -78,9 +79,21 @@ export function scoreCapabilityFit(company, subject) {
   const matchedCapabilities = matchedIds.map((id) => capabilities.find((capability) => capability.id === id));
   matchedCapabilities.forEach((capability) => {
     const levelMultiplier = capability.level === "high" ? 1 : capability.level === "medium" ? 0.7 : 0.45;
+    const statusMultiplier =
+      capability.status === "company_confirmed"
+        ? 1
+        : capability.status === "public_verified"
+          ? 0.96
+          : capability.status === "public_reported"
+            ? 0.84
+            : capability.status === "inferred"
+              ? 0.68
+              : capability.status === "conflicted"
+                ? 0.5
+                : 0.25;
     const cpvBoost = cpvHits.some((hit) => hit.capability.id === capability.id) ? 28 : 0;
     const textBoost = keywordHits.some((hit) => hit.capability.id === capability.id) ? 18 : 0;
-    score += (cpvBoost + textBoost + 10) * levelMultiplier;
+    score += (cpvBoost + textBoost + 10) * levelMultiplier * statusMultiplier;
   });
 
   if (!matchedCapabilities.length && text.includes("instalaciones")) score += 12;
