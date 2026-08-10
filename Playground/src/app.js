@@ -136,6 +136,18 @@ function companyStatusTone(status) {
   return "bad";
 }
 
+function requirementStatusLabel(row) {
+  if (row.status === "needs_verification" && row.mandatory) {
+    return "Needs verification — mandatory";
+  }
+  if (row.status === "failed" && row.mandatory) return "Failed — mandatory";
+  if (row.status === "confirmed" && row.mandatory) return "Confirmed — mandatory";
+  if (row.status === "needs_verification") return "Needs verification";
+  if (row.status === "failed") return "Failed";
+  if (row.status === "confirmed") return "Confirmed";
+  return row.status ?? "Unknown";
+}
+
 function getAiStatusMeta(ai = {}) {
   return AI_STATUS_COPY[ai.status] ?? AI_STATUS_COPY.unavailable;
 }
@@ -1519,7 +1531,7 @@ function renderHealthPage(state, runtime, derived) {
           </div>
           <div>
             <strong>Evidence coverage</strong>
-            <p>${derived.portfolio.recommended[0]?.confidenceShield.criticalFieldsVerified ?? 0}/${derived.portfolio.recommended[0]?.confidenceShield.totalCriticalFields ?? 0} critical fields on the current top match.</p>
+            <p>${derived.portfolio.recommended[0]?.confidenceShield.sourceFieldsEvidenced ?? 0}/${derived.portfolio.recommended[0]?.confidenceShield.totalSourceFields ?? 0} source fields evidenced on the current top match.</p>
           </div>
           <div>
             <strong>Recent audit events</strong>
@@ -1604,6 +1616,7 @@ function renderDetailPanel(derived, showDebugger = false) {
         <div class="detail-stats">
           ${statCard("Match", `${selected.matchScore}/100`)}
           ${statCard("Priority", `${selected.priorityScore}/100`)}
+          ${statCard("Eligibility", ELIGIBILITY_COPY[selected.eligibilityStatus])}
           ${statCard("Confidence", CONFIDENCE_COPY[selected.confidenceShield.label])}
         </div>
         <div class="tab-row">
@@ -1630,6 +1643,13 @@ function renderDetailPanel(derived, showDebugger = false) {
 }
 
 function renderReportTab(opportunity, match) {
+  const eligibilityRequirements = match.requirementRows.filter((row) => row.mandatory).map((row) => row.label);
+  const preparationItems = [
+    "Internal go / no-go review",
+    "Commercial and technical lead assignment",
+    match.unknowns.length ? "Gather evidence for unresolved qualification or eligibility conditions" : null
+  ].filter(Boolean);
+
   return `
     <div class="detail-section">
       <h4>Executive verdict</h4>
@@ -1648,7 +1668,7 @@ function renderReportTab(opportunity, match) {
                 (row) => `
                   <tr>
                     <td>${escapeHtml(row.label)}</td>
-                    <td>${escapeHtml(row.status)}</td>
+                    <td>${escapeHtml(requirementStatusLabel(row))}</td>
                     <td>${escapeHtml(row.evidenceIds.join(", ") || "Not linked")}</td>
                     <td>${escapeHtml(row.why ?? "Not provided")}</td>
                   </tr>
@@ -1662,11 +1682,40 @@ function renderReportTab(opportunity, match) {
     <div class="detail-section">
       <h4>Financial picture</h4>
       <ul class="tight-list">
-        <li>Relevant value: ${escapeHtml(match.displayValueLabel)}</li>
+        ${(match.financialPicture?.lines ?? []).length
+          ? (match.financialPicture?.lines ?? [])
+              .map(
+                (line) =>
+                  `<li>${escapeHtml(line.label)}: ${escapeHtml(line.displayValue)}${line.note ? ` · ${escapeHtml(line.note)}` : ""}</li>`
+              )
+              .join("")
+          : "<li>No reliable financial amount is currently available.</li>"}
         <li>Potential company amount: ${escapeHtml(match.companyAmountLabel)}</li>
         <li>Duration: ${escapeHtml(opportunity.duration ?? "Not stated")}</li>
         <li>Guarantees: ${escapeHtml(opportunity.guarantees ?? "Not stated")}</li>
         <li>Scale fit note: ${escapeHtml(match.dimensions?.scaleAssessment?.note ?? "No scale note recorded.")}</li>
+      </ul>
+    </div>
+    <div class="detail-section">
+      <h4>Eligibility / qualification requirements</h4>
+      <ul class="tight-list">
+        ${eligibilityRequirements.length
+          ? eligibilityRequirements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+          : "<li>None published.</li>"}
+      </ul>
+    </div>
+    <div class="detail-section">
+      <h4>Submission documents</h4>
+      <ul class="tight-list">
+        ${(opportunity.requiredDocuments ?? []).length
+          ? (opportunity.requiredDocuments ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+          : "<li>No submission document has been explicitly listed by the source.</li>"}
+      </ul>
+    </div>
+    <div class="detail-section">
+      <h4>Preparation items</h4>
+      <ul class="tight-list">
+        ${preparationItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
       </ul>
     </div>
     <div class="detail-section">
@@ -1702,12 +1751,14 @@ function renderEvidenceTab(opportunity, match) {
       <div class="shield">
         ${pill(CONFIDENCE_COPY[match.confidenceShield.label], confidenceTone(match.confidenceShield.label))}
         <ul class="tight-list">
-          <li>Official source verified: ${match.confidenceShield.officialSourceVerified ? "Yes" : "No"}</li>
-          <li>Last checked: ${escapeHtml(formatLastChecked(opportunity.lastChecked))}</li>
-          <li>Critical fields verified: ${match.confidenceShield.criticalFieldsVerified}/${match.confidenceShield.totalCriticalFields}</li>
+          <li>Source evidence: ${match.confidenceShield.sourceFieldsEvidenced}/${match.confidenceShield.totalSourceFields} source fields evidenced</li>
+          <li>Mandatory eligibility: ${match.confidenceShield.mandatoryConfirmed} confirmed, ${match.confidenceShield.mandatoryNeedsVerification} need verification, ${match.confidenceShield.mandatoryFailed} failed</li>
+          <li>Company confirmation: ${match.confidenceShield.companyConfirmationsNeeded} answers needed</li>
           <li>Data confidence: ${escapeHtml(match.confidenceShield.dataConfidence)}</li>
           <li>Eligibility confidence: ${escapeHtml(match.confidenceShield.eligibilityConfidence)}</li>
-          <li>Conflicting sources: ${match.confidenceShield.conflictingSources ? "Yes" : "No"}</li>
+          <li>Source conflicts: ${match.confidenceShield.sourceConflictsCount === 0 ? "None" : String(match.confidenceShield.sourceConflictsCount)}</li>
+          <li>Official source verified: ${match.confidenceShield.officialSourceVerified ? "Yes" : "No"}</li>
+          <li>Last checked: ${escapeHtml(formatLastChecked(opportunity.lastChecked))}</li>
         </ul>
       </div>
     </div>

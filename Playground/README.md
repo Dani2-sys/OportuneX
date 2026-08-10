@@ -1,4 +1,4 @@
-# OportuneX Phase 0
+# OportuneX Phase 0.3
 
 OportuneX is a decision-grade public-opportunity intelligence workspace for Spanish SMEs.
 
@@ -14,6 +14,8 @@ This Phase 0 build focuses on the **Intelligence Lab**:
 - review rejected opportunities and evaluation fixtures.
 
 The current build uses a **browser-local Phase 0 persistence adapter** for fast manual validation, while also shipping a normalized PostgreSQL schema scaffold in [`database/schema.sql`](/Users/dani/Documents/Playground/database/schema.sql).
+
+Phase 0.3 is the correctness-hardening pass. It strengthens comparable-experience checks, keeps evidence coverage separate from eligibility confidence, preserves monetary categories, and normalizes deadline handling to `Europe/Madrid`.
 
 ## Stack
 
@@ -50,7 +52,7 @@ Run the project checks:
 
 ## Environment variables
 
-Copy values from [`.env.example`](/Users/dani/Documents/Playground/.env.example) into your shell before starting the server when you want live AI verification.
+Copy [`.env.example`](/Users/dani/Documents/Playground/.env.example) to [`.env.local`](/Users/dani/Documents/Playground/.env.local) when you want live AI verification. The server reads `.env.local`; the browser bundle never receives the raw API key.
 
 ## Project docs
 

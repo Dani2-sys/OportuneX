@@ -192,8 +192,50 @@ test("unknown mandatory requirement remains unknown and reduces confidence", () 
   const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
 
   assert.equal(result.bestMatch.eligibilityStatus, "ELIGIBILITY_UNCLEAR");
+  assert.equal(result.bestMatch.recommendationClass, "VERIFY_BEFORE_DECIDING");
   assert.equal(result.bestMatch.requirementRows[0].status, "needs_verification");
+  assert.equal(result.bestMatch.confidenceShield.sourceFieldsEvidenced, 8);
+  assert.equal(result.bestMatch.confidenceShield.totalSourceFields, 8);
+  assert.equal(result.bestMatch.confidenceShield.dataConfidence, "HIGH");
+  assert.notEqual(result.bestMatch.confidenceShield.eligibilityConfidence, "HIGH");
   assert.notEqual(result.bestMatch.confidenceShield.label, "HIGH");
+});
+
+test("confirmed hard eligibility failure forces do-not-pursue", () => {
+  const runtime = getRuntimeConfig();
+  const company = makeProspectCompany();
+  company.certifications = [
+    {
+      name: "ISO 14001",
+      currentStatus: createCompanyFact("missing", {
+        status: "company_confirmed",
+        confidence: "high",
+        sourceIds: ["website-source"],
+        asOfDate: "2026-08-08"
+      })
+    }
+  ];
+  const opportunity = makeOpportunity({
+    id: "opp-hard-fail",
+    valueMajor: 90000,
+    requirements: [
+      {
+        id: "req-iso14001",
+        kind: "certification",
+        label: "ISO 14001",
+        requiredValue: "ISO 14001",
+        mandatory: true,
+        gating: "hard",
+        evidenceIds: ["ev-5"]
+      }
+    ]
+  });
+  const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
+
+  assert.equal(result.bestMatch.eligibilityStatus, "INELIGIBLE");
+  assert.equal(result.bestMatch.recommendationClass, "DO_NOT_PURSUE");
+  assert.equal(result.bestMatch.confidenceShield.hardMandatoryFailed, 1);
+  assert.equal(result.bestMatch.confidenceShield.label, "LOW");
 });
 
 test("irrelevant unknown fields do not unnecessarily penalise unrelated opportunities", () => {

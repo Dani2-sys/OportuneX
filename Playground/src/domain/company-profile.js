@@ -102,6 +102,48 @@ export function createCompanySource({
   };
 }
 
+export function createRepresentativeProject({
+  id,
+  name,
+  publicProject = null,
+  customer = "",
+  customerType = "",
+  scopeCapabilities = [],
+  cpvPrefixes = [],
+  projectValue = null,
+  currency = "EUR",
+  startDate = null,
+  endDate = null,
+  completionDate = null,
+  completionYear = null,
+  geography = {},
+  sourceIds = [],
+  status = "company_confirmed",
+  confidence = status === "unknown" ? null : "high",
+  notes = null
+} = {}) {
+  return {
+    id,
+    name,
+    publicProject,
+    customer,
+    customerType,
+    scopeCapabilities,
+    cpvPrefixes,
+    projectValue,
+    currency,
+    startDate,
+    endDate,
+    completionDate,
+    completionYear,
+    geography,
+    sourceIds,
+    status,
+    confidence,
+    notes
+  };
+}
+
 export function getProfileMode(company) {
   return PROFILE_MODES.includes(company?.profileMode) ? company.profileMode : "confirmed";
 }
@@ -306,6 +348,42 @@ export function getCompanyInsurancePolicies(company) {
   }));
 }
 
+export function getCompanyRepresentativeProjects(company) {
+  const fallbackStatus = getProfileMode(company) === "prospect" ? "public_reported" : "company_confirmed";
+  return (company?.experience?.representativeProjects ?? []).map((project, index) => {
+    if (typeof project === "string") {
+      return createRepresentativeProject({
+        id: `${company?.id ?? "company"}-project-${index + 1}`,
+        name: project,
+        status: fallbackStatus,
+        confidence: fallbackStatus === "company_confirmed" ? "medium" : "low",
+        notes: project
+      });
+    }
+
+    return createRepresentativeProject({
+      id: project.id ?? `${company?.id ?? "company"}-project-${index + 1}`,
+      name: project.name ?? project.title ?? "",
+      publicProject: project.publicProject ?? project.public ?? null,
+      customer: project.customer ?? project.authority ?? "",
+      customerType: project.customerType ?? project.authorityType ?? "",
+      scopeCapabilities: project.scopeCapabilities ?? project.capabilities ?? [],
+      cpvPrefixes: project.cpvPrefixes ?? [],
+      projectValue: project.projectValue ?? project.contractValue ?? project.value ?? null,
+      currency: project.currency ?? "EUR",
+      startDate: project.startDate ?? null,
+      endDate: project.endDate ?? null,
+      completionDate: project.completionDate ?? null,
+      completionYear: project.completionYear ?? project.year ?? null,
+      geography: project.geography ?? {},
+      sourceIds: project.sourceIds ?? [],
+      status: project.status ?? fallbackStatus,
+      confidence: project.confidence ?? (project.status === "unknown" ? null : "medium"),
+      notes: project.notes ?? null
+    });
+  });
+}
+
 export function getCompanyClassifications(company, type) {
   return (company?.classifications?.[type] ?? []).map((item) => ({
     ...item,
@@ -464,7 +542,8 @@ export function computeDecisionProfileCompleteness(company) {
   const certificationKnown = getCompanyCertifications(company).some((item) => getFactValue(item.currentStatus) != null);
   const experienceKnown =
     getFactValue(getCompanyFact(company, "publicProcurementProjects")) != null ||
-    getFactValue(getCompanyFact(company, "maximumProjectValue")) != null;
+    getFactValue(getCompanyFact(company, "maximumProjectValue")) != null ||
+    getCompanyRepresentativeProjects(company).length > 0;
   const strategyKnown = Boolean(
     (company?.preferences?.desiredWorkTypes ?? []).length || (company?.preferences?.unwantedWorkTypes ?? []).length
   );

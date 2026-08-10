@@ -3,6 +3,7 @@ import {
   PROFILE_MODES,
   createCompanyFact,
   createCompanyRange,
+  createRepresentativeProject,
   getFactValue
 } from "../domain/company-profile.js";
 import { uid } from "../utils.js";
@@ -240,14 +241,91 @@ function validateFacts(rawFacts = {}) {
   );
 }
 
+function validateRepresentativeProject(project, index) {
+  if (typeof project === "string") return project;
+  assert(isPlainObject(project), `experience.representativeProjects[${index}] must be an object or string`);
+  validateKeys(
+    project,
+    new Set([
+      "id",
+      "name",
+      "title",
+      "publicProject",
+      "public",
+      "customer",
+      "authority",
+      "customerType",
+      "authorityType",
+      "scopeCapabilities",
+      "capabilities",
+      "cpvPrefixes",
+      "projectValue",
+      "contractValue",
+      "value",
+      "currency",
+      "startDate",
+      "endDate",
+      "completionDate",
+      "completionYear",
+      "year",
+      "geography",
+      "sourceIds",
+      "status",
+      "confidence",
+      "notes"
+    ]),
+    `experience.representativeProjects[${index}]`
+  );
+  if (project.status) validateStatus(project.status, `experience.representativeProjects[${index}]`);
+  const normalized = createRepresentativeProject({
+    id: project.id ?? uid("project"),
+    name: project.name ?? project.title ?? "",
+    publicProject: project.publicProject ?? project.public ?? null,
+    customer: project.customer ?? project.authority ?? "",
+    customerType: project.customerType ?? project.authorityType ?? "",
+    scopeCapabilities: project.scopeCapabilities ?? project.capabilities ?? [],
+    cpvPrefixes: project.cpvPrefixes ?? [],
+    projectValue: project.projectValue ?? project.contractValue ?? project.value ?? null,
+    currency: project.currency ?? "EUR",
+    startDate: project.startDate ?? null,
+    endDate: project.endDate ?? null,
+    completionDate: project.completionDate ?? null,
+    completionYear: project.completionYear ?? project.year ?? null,
+    geography: project.geography ?? {},
+    sourceIds: project.sourceIds ?? [],
+    status: project.status ?? "unknown",
+    confidence: project.confidence ?? null,
+    notes: project.notes ?? null
+  });
+  assert(normalized.name, `experience.representativeProjects[${index}] name is required`);
+  return normalized;
+}
+
+function validateExperience(experience = {}) {
+  assert(isPlainObject(experience), "experience must be an object when provided");
+  validateKeys(
+    experience,
+    new Set(["yearsInTrade", "maximumProjectValue", "publicProcurementProjects", "representativeProjects"]),
+    "experience"
+  );
+  return {
+    yearsInTrade: experience.yearsInTrade ?? null,
+    maximumProjectValue: experience.maximumProjectValue ?? null,
+    publicProcurementProjects: experience.publicProcurementProjects ?? null,
+    representativeProjects: (experience.representativeProjects ?? []).map(validateRepresentativeProject)
+  };
+}
+
 function normalizeLegacyFields(profile) {
   const facts = profile.facts;
   profile.geography.preferredWorkingRadiusKm = getFactValue(facts.preferredWorkingRadiusKm);
   profile.preferences.minimumAttractiveProjectValue = getFactValue(facts.minimumAttractiveProjectValue);
   profile.preferences.idealProjectValue = getFactValue(facts.idealProjectValue);
   profile.preferences.maximumRealisticProjectValue = getFactValue(facts.maximumRealisticProjectValue);
-  profile.experience.maximumProjectValue = getFactValue(facts.maximumProjectValue);
-  profile.experience.publicProcurementProjects = getFactValue(facts.publicProcurementProjects);
+  profile.experience.maximumProjectValue =
+    getFactValue(facts.maximumProjectValue) ?? profile.experience.maximumProjectValue;
+  profile.experience.publicProcurementProjects =
+    getFactValue(facts.publicProcurementProjects) ?? profile.experience.publicProcurementProjects;
   profile.grants.canCoFinance = getFactValue(facts.canCoFinance);
   profile.grants.deMinimisUsage = getFactValue(facts.deMinimisUsage);
   profile.size.companyAgeYears = getFactValue(facts.companyAgeYears);
@@ -271,6 +349,7 @@ export function importCompanyProfileFromJson(jsonText) {
   const profileMode = parsed.profileMode ?? "prospect";
   assert(PROFILE_MODES.includes(profileMode), `Unsupported profileMode "${profileMode}"`);
   assert(parsed.legalName, "legalName is required for company profile import.");
+  const experience = validateExperience(parsed.experience ?? {});
 
   const profile = {
     id: parsed.id ?? uid("company"),
@@ -305,10 +384,10 @@ export function importCompanyProfileFromJson(jsonText) {
       unwantedWorkTypes: parsed.preferences?.unwantedWorkTypes ?? []
     },
     experience: {
-      yearsInTrade: parsed.experience?.yearsInTrade ?? null,
-      maximumProjectValue: null,
-      publicProcurementProjects: null,
-      representativeProjects: parsed.experience?.representativeProjects ?? []
+      yearsInTrade: experience.yearsInTrade,
+      maximumProjectValue: experience.maximumProjectValue,
+      publicProcurementProjects: experience.publicProcurementProjects,
+      representativeProjects: experience.representativeProjects
     },
     grants: {
       canCoFinance: null,

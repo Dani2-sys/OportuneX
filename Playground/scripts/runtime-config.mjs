@@ -108,7 +108,7 @@ export function initialAiState(env = process.env) {
 export function createRuntimeConfig(env = process.env) {
   return {
     appName: "OportuneX",
-    appPhase: "phase-0.2",
+    appPhase: "phase-0.3",
     ai: {
       ...initialAiState(env),
       analysisModel: env.OPORTUNEX_ANALYSIS_MODEL || DEFAULT_AI_MODELS.analysisModel,

@@ -57,14 +57,24 @@ export function extractClaims(opportunity, lot, analysis) {
 }
 
 export function buildConfidenceShield(opportunity, analysis, now = new Date()) {
-  const verifiedFields = CRITICAL_FIELDS.filter((fieldKey) => evidenceForField(opportunity, fieldKey).length > 0).length;
+  const sourceFieldsEvidenced = CRITICAL_FIELDS.filter((fieldKey) => evidenceForField(opportunity, fieldKey).length > 0).length;
   const conflicts = opportunity.sourceConflicts?.length ?? 0;
-  const outstandingQuestions = analysis.unknowns.length;
+  const summary = analysis.summary ?? {};
   const freshness = scoreFreshness(opportunity.lastChecked, now);
-  const evidenceCoverage = (verifiedFields / CRITICAL_FIELDS.length) * 100;
+  const evidenceCoverage = (sourceFieldsEvidenced / CRITICAL_FIELDS.length) * 100;
   const dataConfidenceValue = clamp(evidenceCoverage * 0.72 + freshness * 0.28 - conflicts * 18, 0, 100);
+  const mandatoryNeedsVerification = summary.mandatoryNeedsVerification ?? analysis.unknowns.length;
+  const mandatoryFailed = summary.mandatoryFailed ?? analysis.blockers.length;
+  const hardMandatoryNeedsVerification = summary.hardMandatoryNeedsVerification ?? 0;
+  const hardMandatoryFailed = summary.hardMandatoryFailed ?? 0;
+  const companyConfirmationsNeeded = summary.companyConfirmationsNeeded ?? mandatoryNeedsVerification;
+
   const eligibilityConfidenceValue = clamp(
-    92 - analysis.unknowns.length * 16 - analysis.blockers.filter((item) => item.severity === "high").length * 8,
+    94 -
+      mandatoryNeedsVerification * 14 -
+      mandatoryFailed * 26 -
+      hardMandatoryNeedsVerification * 24 -
+      hardMandatoryFailed * 18,
     0,
     100
   );
@@ -74,9 +84,13 @@ export function buildConfidenceShield(opportunity, analysis, now = new Date()) {
   const eligibilityConfidence =
     eligibilityConfidenceValue >= 80 ? "HIGH" : eligibilityConfidenceValue >= 55 ? "MEDIUM" : "LOW";
   const label =
-    dataConfidence === "HIGH" && eligibilityConfidence === "HIGH" && conflicts === 0
+    dataConfidence === "HIGH" &&
+    eligibilityConfidence === "HIGH" &&
+    conflicts === 0 &&
+    hardMandatoryNeedsVerification === 0 &&
+    hardMandatoryFailed === 0
       ? "HIGH"
-      : dataConfidence === "LOW" || eligibilityConfidence === "LOW"
+      : dataConfidence === "LOW" || eligibilityConfidence === "LOW" || hardMandatoryFailed > 0
         ? "LOW"
         : "MEDIUM";
 
@@ -84,12 +98,22 @@ export function buildConfidenceShield(opportunity, analysis, now = new Date()) {
     label,
     officialSourceVerified: Boolean(opportunity.sources?.some((source) => source.official)),
     lastChecked: opportunity.lastChecked,
-    criticalFieldsVerified: verifiedFields,
+    sourceFieldsEvidenced,
+    totalSourceFields: CRITICAL_FIELDS.length,
+    criticalFieldsVerified: sourceFieldsEvidenced,
     totalCriticalFields: CRITICAL_FIELDS.length,
+    mandatoryConfirmed: summary.mandatoryConfirmed ?? 0,
+    mandatoryNeedsVerification,
+    mandatoryFailed,
+    hardMandatoryConfirmed: summary.hardMandatoryConfirmed ?? 0,
+    hardMandatoryNeedsVerification,
+    hardMandatoryFailed,
+    companyConfirmationsNeeded,
     dataConfidence,
     eligibilityConfidence,
     conflictingSources: conflicts > 0,
-    outstandingQuestions,
+    outstandingQuestions: mandatoryNeedsVerification,
+    sourceConflictsCount: conflicts,
     conflicts: opportunity.sourceConflicts ?? []
   };
 }

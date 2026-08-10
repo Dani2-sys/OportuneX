@@ -52,10 +52,14 @@ export function deriveRecommendation({
   eligibilityStatus,
   priorityScore,
   confidenceShield,
-  unknownCount
+  unknownCount,
+  hardMandatoryNeedsVerification = 0,
+  geographicFit = null
 }) {
   if (["closed", "cancelled", "awarded", "suspended"].includes(status)) return "DO_NOT_PURSUE";
   if (eligibilityStatus === "INELIGIBLE" || eligibilityStatus === "LIKELY_INELIGIBLE") return "DO_NOT_PURSUE";
+  if (geographicFit != null && geographicFit < 15 && priorityScore < 75) return "LOW_PRIORITY";
+  if (hardMandatoryNeedsVerification > 0) return "VERIFY_BEFORE_DECIDING";
   if (confidenceShield.conflictingSources || unknownCount >= 2) return "VERIFY_BEFORE_DECIDING";
   if (priorityScore >= 88 && confidenceShield.label !== "LOW") return "EXCELLENT_FIT";
   if (priorityScore >= 76) return "STRONG_FIT";
@@ -123,10 +127,7 @@ export function assembleDimensions(company, opportunity, lot, semantic, eligibil
   };
   const confidenceShield = buildConfidenceShield(
     opportunity,
-    {
-      blockers: eligibility.blockers,
-      unknowns: eligibility.unknowns
-    },
+    eligibility,
     now
   );
   return {

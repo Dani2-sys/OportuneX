@@ -11,6 +11,7 @@ import {
 } from "./runtime-config.mjs";
 import {
   buildOpenAiVerificationRequest,
+  classifyOpenAi429,
   extractResponseText,
   validateVerificationResult
 } from "./openai-verification.mjs";
@@ -178,12 +179,15 @@ async function handleOpenAiFailure(response) {
   }
 
   if (response.status === 429) {
+    const quotaClassification = classifyOpenAi429(details.message);
     failVerification(
       429,
-      "rate_limited",
-      "AI verification is temporarily unavailable because the OpenAI rate limit was reached.",
+      quotaClassification,
+      quotaClassification === "insufficient_quota"
+        ? "AI verification is unavailable because the configured OpenAI project has insufficient quota or credits."
+        : "AI verification is temporarily unavailable because the OpenAI rate limit was reached.",
       `OpenAI Responses returned 429: ${details.message}`,
-      "error"
+      quotaClassification === "insufficient_quota" ? "unavailable" : "error"
     );
   }
 

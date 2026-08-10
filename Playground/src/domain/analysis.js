@@ -1,8 +1,9 @@
 import { RECOMMENDATION_COPY } from "../config.js";
 import { clamp, compareDesc } from "../utils.js";
-import { deriveStatus } from "./deadline.js";
+import { daysRemaining, deriveStatus } from "./deadline.js";
 import { extractClaims } from "./evidence.js";
 import { evaluateEligibility } from "./eligibility.js";
+import { buildFinancialPicture } from "./financial-picture.js";
 import { formatMoney, moneyToMajor } from "./money.js";
 import { assembleDimensions, computeScores, deriveRecommendation } from "./scoring.js";
 import { scoreCapabilityFit } from "./semantic.js";
@@ -19,13 +20,6 @@ function defaultLot(opportunity) {
   };
 }
 
-function severityForUnknowns(unknowns) {
-  return unknowns.map((item) => ({
-    ...item,
-    severity: "medium"
-  }));
-}
-
 function buildAdaptiveQuestions(eligibility) {
   return eligibility.requirementRows
     .filter((row) => row.status === "needs_verification" && row.mandatory)
@@ -37,6 +31,14 @@ function buildAdaptiveQuestions(eligibility) {
       why: row.why,
       options: ["Yes", "No", "Unsure", "Add later"]
     }));
+}
+
+function buildDeadlineSignal(opportunity, now) {
+  const remaining = daysRemaining(opportunity.deadline, now);
+  if (remaining == null) return "The published deadline is not clear enough to assess timing.";
+  if (remaining < 0) return "The published deadline has already passed.";
+  if (remaining === 0) return "The published deadline is today in Europe/Madrid.";
+  return `The published deadline is ${remaining} calendar day${remaining === 1 ? "" : "s"} away in Europe/Madrid.`;
 }
 
 function buildPreMortem(match) {
@@ -119,6 +121,8 @@ function buildAnalysedItem(outcome) {
     claims: bestMatch?.claims ?? [],
     reportMarkdown: bestMatch?.reportMarkdown ?? "",
     lotLabel: bestMatch?.lotLabel ?? opportunity.title,
+    financialPicture: bestMatch?.financialPicture ?? null,
+    analysisNow: bestMatch?.analysisNow ?? null,
     dimensions: bestMatch?.dimensions ?? null,
     preMortem: bestMatch?.preMortem ?? []
   };
@@ -134,10 +138,13 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     eligibilityStatus: eligibility.eligibilityStatus,
     priorityScore: scores.priorityScore,
     confidenceShield: dimensions.confidenceShield,
-    unknownCount: eligibility.unknowns.length
+    unknownCount: eligibility.unknowns.length,
+    hardMandatoryNeedsVerification: eligibility.summary.hardMandatoryNeedsVerification,
+    geographicFit: dimensions.geographicFit
   });
 
   const displayValue = lot.value ?? opportunity.maximumAidPerBeneficiary ?? opportunity.estimatedValue;
+  const financialPicture = buildFinancialPicture(opportunity, lot);
   const match = {
     id: `${company.id}:${opportunity.id}:${lot.id}`,
     opportunityId: opportunity.id,
@@ -152,8 +159,10 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     priorityScore: scores.priorityScore,
     displayTitle: lot.title !== opportunity.title ? `${opportunity.title} — ${lot.title}` : opportunity.title,
     lotLabel: lot.title,
-    displayValueLabel: formatMoney(displayValue),
+    displayValueLabel: financialPicture.primaryLine?.displayValue ?? formatMoney(displayValue),
     companyAmountLabel: computeCompanyAmountLabel(opportunity),
+    financialPicture,
+    analysisNow: now.toISOString(),
     locationLabel:
       lot.location?.display ??
       opportunity.location?.display ??
@@ -161,7 +170,7 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     deadlineLabel: opportunity.deadline?.sourceText ?? "Not published",
     positives: [],
     blockers: [...eligibility.blockers],
-    unknowns: severityForUnknowns(eligibility.unknowns),
+    unknowns: [...eligibility.unknowns],
     adaptiveQuestions: buildAdaptiveQuestions(eligibility),
     requirementRows: eligibility.requirementRows,
     primaryContact: choosePrimaryContact(opportunity),
@@ -203,8 +212,8 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
   }
   if (dimensions.deadlineFeasibility >= 70) {
     match.positives.push({
-      title: "Deadline currently feasible",
-      detail: "The published deadline still leaves practical time for a review and decision."
+      title: "Deadline window",
+      detail: buildDeadlineSignal(opportunity, now)
     });
   }
   if (dimensions.evidenceQuality < 50) {
@@ -225,7 +234,7 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
   match.preMortem = buildPreMortem(match);
   match.executiveVerdict = executiveVerdict(company, opportunity, match);
   match.claims = extractClaims(opportunity, lot, match);
-  match.reportMarkdown = generateReportMarkdown(company, opportunity, match);
+  match.reportMarkdown = generateReportMarkdown(company, opportunity, match, now);
   return match;
 }
 
@@ -289,7 +298,7 @@ export function analyzePortfolio(company, opportunities, runtime, now = new Date
     .sort((left, right) => compareDesc(left.priorityScore, right.priorityScore));
   recommended.forEach((item, index) => {
     item.rankLabel = `#${index + 1}`;
-    item.reportMarkdown = generateReportMarkdown(company, item.opportunity, item);
+    item.reportMarkdown = generateReportMarkdown(company, item.opportunity, item, now);
   });
   const rejected = analysed
     .filter((item) => item.rejectedReason)

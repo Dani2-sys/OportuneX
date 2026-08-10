@@ -70,6 +70,7 @@ test("public historical turnover is not treated as exact current turnover", () =
       minimumAmount: 400000,
       mandatory: true
     },
+    null,
     new Date("2026-08-08T10:00:00Z")
   );
 
@@ -102,6 +103,7 @@ test("public website capability does not imply certification", () => {
       requiredValue: "ISO 9001",
       mandatory: true
     },
+    null,
     new Date("2026-08-08T10:00:00Z")
   );
 
@@ -169,4 +171,115 @@ test("prospect importer rejects blind benchmark keys", () => {
       ),
     /blind/i
   );
+});
+
+test("public procurement count alone does not confirm comparable public experience", () => {
+  const company = importCompanyProfileFromJson(
+    JSON.stringify({
+      legalName: "Prospect Installations SL",
+      experience: {
+        maximumProjectValue: 220000,
+        publicProcurementProjects: 1,
+        representativeProjects: ["Municipal lighting upgrade in Reus (€140,000)"]
+      }
+    })
+  );
+
+  const requirement = evaluateRequirement(
+    company,
+    {
+      title: "Electrical maintenance contract",
+      location: {},
+      cpvCodes: ["50711000", "45315300"],
+      keywords: ["electrical maintenance"]
+    },
+    {
+      id: "req-public-exp",
+      kind: "public_experience",
+      label: "At least one comparable public maintenance contract",
+      minimumCount: 1,
+      minimumAmount: 60000,
+      mandatory: true,
+      gating: "hard"
+    },
+    {
+      id: "lot-1",
+      title: "Lot 1",
+      cpvCodes: ["50711000", "45315300"],
+      keywords: ["electrical maintenance"]
+    },
+    new Date("2026-08-08T10:00:00Z")
+  );
+
+  assert.equal(requirement.status, "needs_verification");
+});
+
+test("specific comparable project can confirm public experience", () => {
+  const company = importCompanyProfileFromJson(
+    JSON.stringify({
+      legalName: "Prospect Installations SL",
+      experience: {
+        representativeProjects: [
+          {
+            name: "Municipal electrical maintenance in Reus",
+            publicProject: true,
+            customerType: "municipal authority",
+            scopeCapabilities: ["Electrical maintenance"],
+            cpvPrefixes: ["5071", "45315"],
+            projectValue: 140000,
+            completionYear: 2025,
+            status: "company_confirmed",
+            sourceIds: ["src-public-maintenance"]
+          }
+        ]
+      }
+    })
+  );
+
+  const requirement = evaluateRequirement(
+    company,
+    {
+      title: "Electrical maintenance contract",
+      location: {},
+      cpvCodes: ["50711000", "45315300"],
+      keywords: ["electrical maintenance"]
+    },
+    {
+      id: "req-public-exp",
+      kind: "public_experience",
+      label: "At least one comparable public maintenance contract",
+      minimumCount: 1,
+      minimumAmount: 60000,
+      lookbackYears: 3,
+      mandatory: true,
+      gating: "hard"
+    },
+    {
+      id: "lot-1",
+      title: "Lot 1",
+      cpvCodes: ["50711000", "45315300"],
+      keywords: ["electrical maintenance"]
+    },
+    new Date("2026-08-08T10:00:00Z")
+  );
+
+  assert.equal(requirement.status, "confirmed");
+});
+
+test("importer preserves legacy experience values when facts are absent", () => {
+  const company = importCompanyProfileFromJson(
+    JSON.stringify({
+      legalName: "Prospect Installations SL",
+      experience: {
+        maximumProjectValue: 220000,
+        publicProcurementProjects: 3,
+        representativeProjects: ["Municipal lighting upgrade in Reus (€140,000)"]
+      }
+    })
+  );
+
+  assert.equal(company.experience.maximumProjectValue, 220000);
+  assert.equal(company.experience.publicProcurementProjects, 3);
+  assert.equal(getFactValue(getCompanyFact(company, "maximumProjectValue")), 220000);
+  assert.equal(getFactValue(getCompanyFact(company, "publicProcurementProjects")), 3);
 });

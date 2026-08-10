@@ -1,5 +1,36 @@
 import { clamp, formatDate, formatIsoDate } from "../utils.js";
 
+export const SPANISH_TIME_ZONE = "Europe/Madrid";
+
+function pad(value) {
+  return String(value).padStart(2, "0");
+}
+
+function zonedDateTimeParts(now = new Date(), timeZone = SPANISH_TIME_ZONE) {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  });
+  return Object.fromEntries(
+    formatter
+      .formatToParts(now)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)])
+  );
+}
+
+function getTimeZoneOffsetMilliseconds(now, timeZone = SPANISH_TIME_ZONE) {
+  const parts = zonedDateTimeParts(now, timeZone);
+  const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return asUtc - now.getTime();
+}
+
 export function parseSpanishDate(text = "") {
   const match = text.match(/(\d{2})\/(\d{2})\/(\d{4})(?:\s*(?:at|a las)?\s*(\d{1,2}):(\d{2}))?/i);
   if (!match) return null;
@@ -8,16 +39,41 @@ export function parseSpanishDate(text = "") {
     sourceText: text.trim(),
     date: `${year}-${month}-${day}`,
     time: hour != null ? `${hour.padStart(2, "0")}:${minute}` : null,
-    timezone: "Europe/Madrid",
-    sourceTimezone: "Europe/Madrid",
+    timezone: SPANISH_TIME_ZONE,
+    sourceTimezone: SPANISH_TIME_ZONE,
     utcEquivalent: hour != null ? toUtcIso(`${year}-${month}-${day}`, `${hour.padStart(2, "0")}:${minute}`) : null
   };
 }
 
-export function toUtcIso(date, time) {
+export function toUtcIso(date, time, timeZone = SPANISH_TIME_ZONE) {
   if (!date || !time) return null;
-  const local = new Date(`${date}T${time}:00`);
-  return Number.isNaN(local.getTime()) ? null : local.toISOString();
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  if ([year, month, day, hour, minute].some((value) => !Number.isFinite(value))) return null;
+
+  const localUtcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  let timestamp = localUtcGuess;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const offset = getTimeZoneOffsetMilliseconds(new Date(timestamp), timeZone);
+    const corrected = localUtcGuess - offset;
+    if (corrected === timestamp) break;
+    timestamp = corrected;
+  }
+
+  const resolved = new Date(timestamp);
+  const resolvedParts = zonedDateTimeParts(resolved, timeZone);
+  if (
+    resolvedParts.year !== year ||
+    resolvedParts.month !== month ||
+    resolvedParts.day !== day ||
+    resolvedParts.hour !== hour ||
+    resolvedParts.minute !== minute
+  ) {
+    return null;
+  }
+
+  return resolved.toISOString();
 }
 
 function ymdToDate(value) {
@@ -32,7 +88,8 @@ export function calendarDayDiff(from, to) {
 }
 
 export function currentYmd(now = new Date()) {
-  return now.toISOString().slice(0, 10);
+  const parts = zonedDateTimeParts(now, SPANISH_TIME_ZONE);
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
 }
 
 export function daysRemaining(deadline, now = new Date()) {
@@ -92,8 +149,8 @@ export function urgencyChip(opportunity, now = new Date()) {
   if (remaining == null) return "Deadline not stated";
   if (remaining < 0) return "Expired";
   if (remaining === 0) return "Closes today";
-  if (remaining <= 3) return `${remaining} days left`;
-  return `${remaining} days remaining`;
+  if (remaining <= 3) return `${remaining} calendar days left`;
+  return `${remaining} calendar days remaining`;
 }
 
 export function scoreFreshness(lastChecked, now = new Date()) {

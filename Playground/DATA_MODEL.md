@@ -48,7 +48,47 @@ The analysis result stores:
 - adaptiveQuestions
 - claims
 - confidenceShield
+- financialPicture
+- analysisNow
 - reportMarkdown
+
+## Representative projects
+
+Company experience can include `representativeProjects` with structured comparable-project evidence:
+
+- `name`
+- `publicProject`
+- `customer` and `customerType`
+- `scopeCapabilities`
+- `cpvPrefixes`
+- `projectValue`
+- `completionDate` or `completionYear`
+- `status`, `confidence`, `sourceIds`
+
+Strings are allowed as a lightweight fallback, but they are treated as incomplete evidence and cannot confirm comparable-scope eligibility on their own.
+
+## Confidence shield semantics
+
+The confidence shield now keeps source coverage separate from eligibility certainty:
+
+- `sourceFieldsEvidenced` and `totalSourceFields`
+- `mandatoryConfirmed`
+- `mandatoryNeedsVerification`
+- `mandatoryFailed`
+- `hardMandatoryConfirmed`
+- `hardMandatoryNeedsVerification`
+- `hardMandatoryFailed`
+- `companyConfirmationsNeeded`
+- `dataConfidence`
+- `eligibilityConfidence`
+- `sourceConflictsCount`
+
+## Financial picture
+
+`financialPicture` preserves published monetary categories instead of collapsing them:
+
+- contracts: relevant lot value, base budget, estimated total contract value, whole-procedure value, annual value, multi-year value
+- grants: maximum aid per beneficiary, programme budget, eligible project cost, aid intensity
 
 ## SQL scaffold
 

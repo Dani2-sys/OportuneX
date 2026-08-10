@@ -1,39 +1,74 @@
 import { RECOMMENDATION_COPY, ELIGIBILITY_COPY, OPPORTUNITY_TYPES } from "../config.js";
-import { formatDeadline, urgencyChip } from "./deadline.js";
-import { formatMoney } from "./money.js";
+import { daysRemaining, formatDeadline } from "./deadline.js";
 
 export function executiveVerdict(company, opportunity, analysis) {
-  const bestCapability = analysis.positives[0]?.title ?? "the capability fit";
-  const mainQuestion = analysis.unknowns[0]?.title ?? analysis.blockers[0]?.title ?? "published eligibility details";
-  const action =
+  const positiveSignals = analysis.positives
+    .filter((item) => item.title !== "Deadline window")
+    .slice(0, 2)
+    .map((item) => item.title.toLowerCase());
+  const interestLead = positiveSignals.length
+    ? `${positiveSignals.join(" and ")} are currently strong.`
+    : `${analysis.displayTitle} is technically related to ${company.legalName}.`;
+  const gatingItem = analysis.blockers[0] ?? analysis.unknowns[0] ?? null;
+  const gatingSentence = gatingItem
+    ? `However, ${gatingItem.title.toLowerCase()} remains unresolved: ${gatingItem.detail}`
+    : analysis.eligibilityStatus === "CONFIRMED_ELIGIBLE"
+      ? "All mandatory eligibility conditions are currently confirmed."
+      : "No unresolved gating issue is currently recorded, but the final bid decision still needs business judgement.";
+  const actionSentence =
     analysis.recommendationClass === "DO_NOT_PURSUE"
-      ? "Do not invest pursuit time unless the blocking facts change."
+      ? "Do not pursue it under the current evidence set."
       : analysis.recommendationClass === "VERIFY_BEFORE_DECIDING"
-        ? "Verify the missing mandatory facts before deciding whether to pursue it."
-        : "Review the official route and decide whether to pursue it this week.";
+        ? "Verify these conditions before deciding whether to bid."
+        : "Investigate it now through the official route and confirm any remaining business assumptions.";
 
-  return `${analysis.displayTitle} is worth attention because ${bestCapability.toLowerCase()} aligns well with ${company.legalName}. The current opportunity shape looks realistic on scope, geography and timing, but ${mainQuestion.toLowerCase()} remains the main issue. ${action}`;
+  return `${interestLead} ${gatingSentence} ${actionSentence}`;
 }
 
 export function buildPreparationChecklist(opportunity, analysis) {
-  const explicit = [
-    ...analysis.requirementRows.filter((row) => row.mandatory).map((row) => row.label),
-    ...(opportunity.requiredDocuments ?? [])
-  ];
-  const likely = [
+  const eligibilityRequirements = analysis.requirementRows.filter((row) => row.mandatory).map((row) => row.label);
+  const requiredDocuments = opportunity.requiredDocuments ?? [];
+  const preparationItems = [
     "Internal go / no-go review",
     "Commercial and technical lead assignment",
-    analysis.unknowns.length ? "Evidence for unanswered eligibility questions" : null
+    analysis.unknowns.length ? "Gather evidence for unresolved qualification or eligibility conditions" : null
   ].filter(Boolean);
-  return { explicit, likely };
+  return { eligibilityRequirements, requiredDocuments, preparationItems };
 }
 
-export function generateReportMarkdown(company, opportunity, analysis) {
+function formatRequirementStatus(row) {
+  if (row.status === "needs_verification" && row.mandatory) {
+    return "Needs verification — mandatory";
+  }
+  if (row.status === "failed" && row.mandatory) {
+    return "Failed — mandatory";
+  }
+  if (row.status === "confirmed" && row.mandatory) {
+    return "Confirmed — mandatory";
+  }
+  if (row.status === "needs_verification") return "Needs verification";
+  if (row.status === "failed") return "Failed";
+  if (row.status === "confirmed") return "Confirmed";
+  return row.status ?? "Unknown";
+}
+
+function formatFinancialPicture(analysis) {
+  if (!analysis.financialPicture?.lines?.length) return "- No reliable financial amount is currently available.";
+  return analysis.financialPicture.lines
+    .map((line) => {
+      const suffix = line.note ? ` (${line.note})` : "";
+      return `- ${line.label}: ${line.displayValue}${suffix}`;
+    })
+    .join("\n");
+}
+
+export function generateReportMarkdown(company, opportunity, analysis, now = new Date()) {
   const checklist = buildPreparationChecklist(opportunity, analysis);
+  const remainingDays = daysRemaining(opportunity.deadline, now);
   const rows = analysis.requirementRows
     .map(
       (row) =>
-        `| ${row.label} | ${row.status} | ${row.evidenceIds.join(", ") || "Not linked"} | ${row.why ?? "Not provided"} |`
+        `| ${row.label} | ${formatRequirementStatus(row)} | ${row.evidenceIds.join(", ") || "Not linked"} | ${row.why ?? "Not provided"} |`
     )
     .join("\n");
   const sources = (opportunity.sources ?? [])
@@ -57,7 +92,7 @@ export function generateReportMarkdown(company, opportunity, analysis) {
 **Published value:** ${analysis.displayValueLabel}  
 **Location:** ${analysis.locationLabel}  
 **Deadline:** ${formatDeadline(opportunity.deadline)}  
-**Days remaining:** ${urgencyChip(opportunity)}
+**Calendar days remaining:** ${remainingDays ?? "Not determined"}
 
 ### Executive Verdict
 
@@ -75,22 +110,23 @@ ${rows}
 
 ### Financial Picture
 
-- Primary value used for analysis: ${analysis.displayValueLabel}
+- Primary customer-facing amount: ${analysis.displayValueLabel}
 - Duration: ${opportunity.duration ?? "Not stated"}
 - Guarantees: ${opportunity.guarantees ?? "Not stated"}
 - Potential company funding: ${analysis.companyAmountLabel}
+${formatFinancialPicture(analysis)}
 
-### Requirements
+### Eligibility / Qualification Requirements
 
-${analysis.requirementRows.map((row) => `- ${row.label}`).join("\n")}
+${checklist.eligibilityRequirements.map((row) => `- ${row}`).join("\n") || "- None published."}
 
-### Documents / Preparation
+### Submission Documents
 
-Explicitly required by source:
-${checklist.explicit.map((item) => `- ${item}`).join("\n")}
+${checklist.requiredDocuments.map((item) => `- ${item}`).join("\n") || "- No submission document has been explicitly listed by the source."}
 
-Likely preparation items:
-${checklist.likely.map((item) => `- ${item}`).join("\n")}
+### Preparation Items
+
+${checklist.preparationItems.map((item) => `- ${item}`).join("\n")}
 
 ### Risks & Blockers
 
@@ -120,10 +156,11 @@ ${sources}
 
 - Official source verified: ${analysis.confidenceShield.officialSourceVerified ? "Yes" : "No"}
 - Last checked: ${opportunity.lastChecked ?? "Never"}
-- Critical fields verified: ${analysis.confidenceShield.criticalFieldsVerified}/${analysis.confidenceShield.totalCriticalFields}
+- Source fields evidenced: ${analysis.confidenceShield.sourceFieldsEvidenced}/${analysis.confidenceShield.totalSourceFields}
+- Mandatory conditions: ${analysis.confidenceShield.mandatoryConfirmed} confirmed, ${analysis.confidenceShield.mandatoryNeedsVerification} need verification, ${analysis.confidenceShield.mandatoryFailed} failed
+- Company confirmations needed: ${analysis.confidenceShield.companyConfirmationsNeeded}
 - Data confidence: ${analysis.confidenceShield.dataConfidence}
 - Eligibility confidence: ${analysis.confidenceShield.eligibilityConfidence}
-- Conflicting sources: ${analysis.confidenceShield.conflictingSources ? "Yes" : "No"}
-- Outstanding critical questions: ${analysis.confidenceShield.outstandingQuestions}
+- Source conflicts: ${analysis.confidenceShield.sourceConflictsCount}
 `;
 }

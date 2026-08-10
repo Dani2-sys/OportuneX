@@ -4,7 +4,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { buildOpenAiVerificationRequest } from "../scripts/openai-verification.mjs";
+import {
+  buildOpenAiVerificationRequest,
+  buildVerificationPrompt,
+  classifyOpenAi429
+} from "../scripts/openai-verification.mjs";
 import {
   createRuntimeConfig,
   loadLocalEnv,
@@ -75,4 +79,20 @@ test("AI verifier request uses configured server-side model and strict structure
   assert.equal(requestBody.reasoning.effort, "medium");
   assert.equal(requestBody.text.format.type, "json_schema");
   assert.equal(requestBody.text.format.strict, true);
+});
+
+test("verification prompt is framed as an independent second-pass layer", () => {
+  const prompt = buildVerificationPrompt({
+    company: { legalName: "Prospect Installations SL" },
+    opportunity: { title: "Electrical maintenance contract" },
+    analysis: { recommendationClass: "VERIFY_BEFORE_DECIDING" }
+  });
+
+  assert.match(prompt, /independent second-pass verification layer/i);
+  assert.doesNotMatch(prompt, /deterministic second-pass verification layer/i);
+});
+
+test("429 classification distinguishes quota exhaustion from rate limiting", () => {
+  assert.equal(classifyOpenAi429("Error: insufficient_quota, billing credits exhausted"), "insufficient_quota");
+  assert.equal(classifyOpenAi429("Rate limit reached for requests"), "rate_limited");
 });

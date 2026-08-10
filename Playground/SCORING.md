@@ -4,8 +4,12 @@
 
 - Hard blockers override scores.
 - Unknown mandatory conditions never count as pass.
+- Hard mandatory unknowns force `VERIFY_BEFORE_DECIDING`.
+- Hard mandatory failures force `DO_NOT_PURSUE`.
 - Relevant lot values outrank whole-procedure totals.
+- Base budgets, estimated totals and beneficiary aid ceilings stay separate.
 - Money, deadlines and status are handled deterministically.
+- Source evidence coverage does not imply eligibility confirmation.
 
 ## Dimensions
 
@@ -27,6 +31,12 @@ The engine computes:
 - Eligibility Status
 - Confidence Shield
 - Recommendation Class
+
+## Confidence semantics
+
+- `dataConfidence` reflects source-field coverage, freshness and source conflicts.
+- `eligibilityConfidence` reflects confirmed, failed and unknown mandatory conditions.
+- A `HIGH` overall confidence shield requires both high data confidence and high eligibility confidence, with no hard mandatory unknowns or failures.
 
 ## Recommendation classes
 

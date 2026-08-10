@@ -14,7 +14,7 @@ export const NAV_ITEMS = [
 
 export const DEFAULT_RUNTIME = {
   appName: APP_TITLE,
-  appPhase: "phase-0.2",
+  appPhase: "phase-0.3",
   ai: {
     provider: "mock",
     status: "mock",

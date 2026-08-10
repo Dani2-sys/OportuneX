@@ -169,7 +169,7 @@ futureStart.id = "opp-upcoming";
 futureStart.startDate = "2026-08-20";
 
 export const evaluationFixtures = [
-  fixture("eval-01", "ideal matching tender", excellentFit, { recommendationClass: "STRONG_FIT", active: true, relevant: true }),
+  fixture("eval-01", "ideal matching tender", excellentFit, { recommendationClass: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
   fixture("eval-02", "irrelevant tender with matching keyword", outsideGeography, { recommendationClass: "LOW_PRIORITY", rejectedReasonIncludes: "Low fit", relevant: false }),
   fixture("eval-03", "expired tender", expired, { active: false, rejectedReasonIncludes: "Deadline passed", relevant: false }),
   fixture("eval-04", "cancelled tender", cancelled, { active: false, rejectedReasonIncludes: "Cancelled", relevant: false }),

@@ -53,9 +53,15 @@ const recommendationSet = new Set(
 const reviewStatusSet = new Set(verificationSchema.properties.review_status.enum);
 const confidenceSet = new Set(verificationSchema.properties.confidence.enum);
 
+export function classifyOpenAi429(message = "") {
+  return /quota|insufficient|billing|credit|credits|exhausted|plan/i.test(message)
+    ? "insufficient_quota"
+    : "rate_limited";
+}
+
 export function buildVerificationPrompt(payload) {
   return `
-You are the deterministic second-pass verification layer for OportuneX.
+You are the independent second-pass verification layer for OportuneX.
 Check the opportunity, company facts and first analysis for:
 - unsupported claims
 - missed hard blockers

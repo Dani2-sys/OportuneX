@@ -4,7 +4,7 @@
 
 The current app uses deterministic analysis as the primary engine.
 
-AI is reserved for **second-pass verification**.
+AI is reserved for **independent second-pass verification**.
 
 ## Verification adapter
 
@@ -12,7 +12,7 @@ The local server exposes:
 
 - `POST /api/ai/analyze`
 
-When `OPENAI_API_KEY` is not set:
+When `OPENAI_API_KEY` is not set in `.env.local`:
 
 - the route returns a structured mock verification result.
 
@@ -20,6 +20,7 @@ When `OPENAI_API_KEY` is set:
 
 - the route calls the OpenAI Responses API from the server side;
 - the client bundle never receives the API key.
+- 429 responses are distinguished between temporary rate limiting and insufficient quota / credits.
 
 ## Official API basis
 
@@ -38,4 +39,5 @@ The specific verification payload is a project inference layered on top of that 
 - source documents are treated as untrusted data
 - AI output is not used for arithmetic, date logic or hard filters
 - verification output is structured and stored separately from hidden reasoning
+- AI verification does not override deterministic hard filters or monetary arithmetic
 - deterministic engine remains the source of truth in Phase 0
