@@ -92,7 +92,7 @@ The confidence shield now keeps source coverage separate from eligibility certai
 
 ## SQL scaffold
 
-The normalized relational scaffold lives in [database/schema.sql](/Users/dani/Documents/Playground/database/schema.sql) and includes:
+The normalized relational scaffold lives in [database/schema.sql](database/schema.sql) and includes:
 
 - users
 - organisations

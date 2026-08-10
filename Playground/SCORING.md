@@ -49,4 +49,4 @@ The engine computes:
 
 ## Centralized weights
 
-Weights live in [`src/config.js`](/Users/dani/Documents/Playground/src/config.js) so they can be tuned without rewriting UI code.
+Weights live in [`src/config.js`](src/config.js) so they can be tuned without rewriting UI code.

@@ -13,7 +13,7 @@ This Phase 0 build focuses on the **Intelligence Lab**:
 - generate a professional report;
 - review rejected opportunities and evaluation fixtures.
 
-The current build uses a **browser-local Phase 0 persistence adapter** for fast manual validation, while also shipping a normalized PostgreSQL schema scaffold in [`database/schema.sql`](/Users/dani/Documents/Playground/database/schema.sql).
+The current build uses a **browser-local Phase 0 persistence adapter** for fast manual validation, while also shipping a normalized PostgreSQL schema scaffold in [`database/schema.sql`](database/schema.sql).
 
 Phase 0.3 is the correctness-hardening pass. It strengthens comparable-experience checks, keeps evidence coverage separate from eligibility confidence, preserves monetary categories, and normalizes deadline handling to `Europe/Madrid`.
 
@@ -21,8 +21,8 @@ Phase 0.3 is the correctness-hardening pass. It strengthens comparable-experienc
 
 - Static HTML + CSS + browser ESM modules
 - Dependency-light domain engine in `src/`
-- Local server in [`scripts/dev-server.mjs`](/Users/dani/Documents/Playground/scripts/dev-server.mjs)
-- Node built-in tests in [`tests/`](/Users/dani/Documents/Playground/tests)
+- Local server in [`scripts/dev-server.mjs`](scripts/dev-server.mjs)
+- Node built-in tests in [`tests/`](tests/)
 - Server-side AI verification scaffold using the OpenAI Responses API
 
 ## Run locally
@@ -52,16 +52,16 @@ Run the project checks:
 
 ## Environment variables
 
-Copy [`.env.example`](/Users/dani/Documents/Playground/.env.example) to [`.env.local`](/Users/dani/Documents/Playground/.env.local) when you want live AI verification. The server reads `.env.local`; the browser bundle never receives the raw API key.
+Copy [`.env.example`](.env.example) to [`.env.local`](.env.local) when you want live AI verification. The server reads `.env.local`; the browser bundle never receives the raw API key.
 
 ## Project docs
 
-- [ARCHITECTURE.md](/Users/dani/Documents/Playground/ARCHITECTURE.md)
-- [DATA_MODEL.md](/Users/dani/Documents/Playground/DATA_MODEL.md)
-- [SCORING.md](/Users/dani/Documents/Playground/SCORING.md)
-- [AI_SYSTEM.md](/Users/dani/Documents/Playground/AI_SYSTEM.md)
-- [SOURCE_CONNECTORS.md](/Users/dani/Documents/Playground/SOURCE_CONNECTORS.md)
-- [SECURITY.md](/Users/dani/Documents/Playground/SECURITY.md)
-- [EVALUATION.md](/Users/dani/Documents/Playground/EVALUATION.md)
-- [ROADMAP.md](/Users/dani/Documents/Playground/ROADMAP.md)
-- [AGENTS.md](/Users/dani/Documents/Playground/AGENTS.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [DATA_MODEL.md](DATA_MODEL.md)
+- [SCORING.md](SCORING.md)
+- [AI_SYSTEM.md](AI_SYSTEM.md)
+- [SOURCE_CONNECTORS.md](SOURCE_CONNECTORS.md)
+- [SECURITY.md](SECURITY.md)
+- [EVALUATION.md](EVALUATION.md)
+- [ROADMAP.md](ROADMAP.md)
+- [AGENTS.md](AGENTS.md)

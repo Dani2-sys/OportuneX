@@ -51,12 +51,22 @@ export function buildFinancialPicture(opportunity, lot = null) {
     };
   }
 
-  const hasLotSpecificPrimary = Boolean(lot?.value || opportunity.relevantValue);
-  const primaryLabel = lot?.value
-    ? `Relevant ${lot.title}`
+  const publishedLot = lot?.synthetic ? null : lot;
+  const primarySource = publishedLot?.value
+    ? "published_lot"
     : opportunity.relevantValue
-      ? "Relevant lot value"
+      ? "relevant_value"
       : opportunity.estimatedValue
+        ? "estimated_value"
+        : opportunity.baseBudget
+          ? "base_budget"
+          : null;
+  const hasLotSpecificPrimary = Boolean(publishedLot?.value || opportunity.relevantValue);
+  const primaryLabel = primarySource === "published_lot"
+    ? `Relevant ${publishedLot.title}`
+    : primarySource === "relevant_value"
+      ? "Relevant lot value"
+      : primarySource === "estimated_value"
         ? "Estimated contract value"
         : "Base / tender budget";
 
@@ -64,7 +74,7 @@ export function buildFinancialPicture(opportunity, lot = null) {
     buildMoneyLine(
       "primary_contract_value",
       primaryLabel,
-      lot?.value ?? opportunity.relevantValue ?? opportunity.estimatedValue ?? opportunity.baseBudget,
+      publishedLot?.value ?? opportunity.relevantValue ?? opportunity.estimatedValue ?? opportunity.baseBudget,
       {
         primary: true,
         note: "Primary value used for OportuneX assessment."
@@ -73,12 +83,12 @@ export function buildFinancialPicture(opportunity, lot = null) {
     buildMoneyLine(
       "base_budget",
       hasLotSpecificPrimary ? "Whole procedure base budget" : "Base / tender budget",
-      opportunity.baseBudget
+      primarySource === "base_budget" ? null : opportunity.baseBudget
     ),
     buildMoneyLine(
       "estimated_value",
       hasLotSpecificPrimary ? "Estimated total contract value" : "Estimated contract value",
-      opportunity.estimatedValue
+      primarySource === "estimated_value" ? null : opportunity.estimatedValue
     ),
     buildMoneyLine("whole_procedure_value", "Whole procedure value", opportunity.wholeProcedureValue),
     buildMoneyLine("annual_value", "Annual value", opportunity.annualValue),

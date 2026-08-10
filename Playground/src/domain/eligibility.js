@@ -151,6 +151,12 @@ function assessRepresentativeProject(project, signals, now) {
   }
 
   const publicStatus = projectPublicStatus(project, signals.publicOnly);
+  if (publicStatus === "failed") {
+    return {
+      status: "failed",
+      publicEvidenceConfirmed: false
+    };
+  }
   if (publicStatus === "needs_verification") {
     return {
       status: "needs_verification",
@@ -480,7 +486,9 @@ export function evaluateEligibility(company, opportunity, lot, now = new Date())
   let eligibilityStatus = "LIKELY_ELIGIBLE";
   if (failedMandatory.length) eligibilityStatus = "INELIGIBLE";
   else if (unknownMandatory.length) eligibilityStatus = "ELIGIBILITY_UNCLEAR";
-  else if (confirmedMandatory.length === mandatoryRows.length) eligibilityStatus = "CONFIRMED_ELIGIBLE";
+  else if (mandatoryRows.length > 0 && confirmedMandatory.length === mandatoryRows.length) {
+    eligibilityStatus = "CONFIRMED_ELIGIBLE";
+  }
 
   const blockers = failedMandatory.map((row) => ({
     title: row.label,

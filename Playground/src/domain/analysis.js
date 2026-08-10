@@ -16,6 +16,7 @@ function defaultLot(opportunity) {
     description: opportunity.description,
     cpvCodes: opportunity.cpvCodes ?? [],
     value: opportunity.relevantValue ?? opportunity.maximumAidPerBeneficiary ?? opportunity.estimatedValue,
+    synthetic: true,
     requirements: []
   };
 }

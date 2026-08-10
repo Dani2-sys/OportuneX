@@ -4,11 +4,11 @@
 
 The evaluation harness uses stable fixtures in:
 
-- [src/data/evaluation-fixtures.js](/Users/dani/Documents/Playground/src/data/evaluation-fixtures.js)
+- [src/data/evaluation-fixtures.js](src/data/evaluation-fixtures.js)
 
 and scoring logic from:
 
-- [src/domain/evaluation.js](/Users/dani/Documents/Playground/src/domain/evaluation.js)
+- [src/domain/evaluation.js](src/domain/evaluation.js)
 
 ## Coverage
 
