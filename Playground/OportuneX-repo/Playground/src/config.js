@@ -1,0 +1,140 @@
+export const APP_TITLE = "OportuneX";
+
+export const NAV_ITEMS = [
+  { id: "overview", label: "Overview" },
+  { id: "opportunities", label: "Opportunities" },
+  { id: "saved", label: "Saved" },
+  { id: "company", label: "Company Profile" },
+  { id: "lab", label: "Intelligence Lab", admin: true },
+  { id: "sources", label: "Data Sources", admin: true },
+  { id: "debug", label: "Analysis Debugger", admin: true },
+  { id: "evaluation", label: "Evaluation", admin: true },
+  { id: "health", label: "System Health", admin: true }
+];
+
+export const DEFAULT_RUNTIME = {
+  appName: APP_TITLE,
+  appPhase: "phase-0.3",
+  ai: {
+    provider: "mock",
+    status: "mock",
+    lastChecked: null,
+    lastError: null,
+    analysisModel: "gpt-5.6-terra",
+    verificationModel: "gpt-5.6-terra",
+    extractionModel: "gpt-5.6-luna",
+    reasoningEffort: "medium"
+  },
+  connectors: {
+    placsp: "planned",
+    bdns: "planned",
+    ted: "planned"
+  },
+  verification: {
+    priorityThreshold: 84,
+    valueThresholdEur: 120000,
+    imminentDeadlineDays: 5
+  },
+  scoring: {
+    match: {
+      capabilityFit: 0.28,
+      financialScaleFit: 0.14,
+      geographicFit: 0.12,
+      strategicFit: 0.14,
+      qualificationReadiness: 0.18,
+      deadlineFeasibility: 0.07,
+      applicationEffort: 0.07
+    },
+    priority: {
+      matchScore: 0.46,
+      qualificationReadiness: 0.16,
+      deadlineFeasibility: 0.16,
+      evidenceQuality: 0.12,
+      applicationEffort: 0.1
+    }
+  }
+};
+
+export const RECOMMENDATION_COPY = {
+  EXCELLENT_FIT: "Excellent Fit",
+  STRONG_FIT: "Strong Fit",
+  POSSIBLE_FIT: "Possible Fit",
+  LOW_PRIORITY: "Low Priority",
+  DO_NOT_PURSUE: "Do Not Pursue",
+  VERIFY_BEFORE_DECIDING: "Verify Before Deciding"
+};
+
+export const ELIGIBILITY_COPY = {
+  CONFIRMED_ELIGIBLE: "Confirmed Eligible",
+  LIKELY_ELIGIBLE: "Likely Eligible",
+  ELIGIBILITY_UNCLEAR: "Eligibility Unclear",
+  LIKELY_INELIGIBLE: "Likely Ineligible",
+  INELIGIBLE: "Ineligible"
+};
+
+export const CONFIDENCE_COPY = {
+  HIGH: "High",
+  MEDIUM: "Medium",
+  LOW: "Low"
+};
+
+export const OPPORTUNITY_TYPES = {
+  contract: "Public contract",
+  grant: "Grant / subsidy"
+};
+
+export const NOTICE_TYPES = {
+  active_contract_notice: "Active contract notice",
+  award_notice: "Award notice",
+  grant_call: "Grant call",
+  amendment: "Amendment",
+  cancellation: "Cancellation",
+  prior_information: "Prior information"
+};
+
+export const STATUS_LABELS = {
+  open: "Open",
+  upcoming: "Upcoming",
+  closing_soon: "Closing soon",
+  closed: "Closed",
+  cancelled: "Cancelled",
+  suspended: "Suspended",
+  awarded: "Awarded",
+  unknown: "Unknown / verification required"
+};
+
+export const FEEDBACK_LABELS = {
+  interested: "Interested",
+  not_relevant: "Not relevant",
+  saved: "Saved"
+};
+
+export function getRuntimeConfig() {
+  const runtime = typeof window !== "undefined" ? window.OPORTUNEX_RUNTIME : {};
+  return {
+    ...DEFAULT_RUNTIME,
+    ...runtime,
+    ai: {
+      ...DEFAULT_RUNTIME.ai,
+      ...(runtime?.ai ?? {})
+    },
+    connectors: {
+      ...DEFAULT_RUNTIME.connectors,
+      ...(runtime?.connectors ?? {})
+    },
+    verification: {
+      ...DEFAULT_RUNTIME.verification,
+      ...(runtime?.verification ?? {})
+    },
+    scoring: {
+      match: {
+        ...DEFAULT_RUNTIME.scoring.match,
+        ...(runtime?.scoring?.match ?? {})
+      },
+      priority: {
+        ...DEFAULT_RUNTIME.scoring.priority,
+        ...(runtime?.scoring?.priority ?? {})
+      }
+    }
+  };
+}
