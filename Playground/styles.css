@@ -196,6 +196,83 @@ button {
   border: 1px solid rgba(13, 92, 99, 0.12);
 }
 
+.toast.success {
+  background: var(--good-soft);
+  border-color: rgba(31, 122, 63, 0.2);
+}
+
+.toast.warn {
+  background: var(--warn-soft);
+  border-color: rgba(176, 113, 18, 0.2);
+}
+
+.toast.error {
+  background: var(--bad-soft);
+  border-color: rgba(161, 55, 55, 0.2);
+}
+
+.toast strong {
+  display: block;
+}
+
+.toast p,
+.toast small {
+  margin: 6px 0 0;
+  display: block;
+}
+
+.form-status-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-status-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: var(--neutral-soft);
+  color: var(--ink);
+}
+
+.form-status-chip.is-good {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+.form-status-chip.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.form-status-chip.is-error {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.form-inline-feedback {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.form-inline-feedback.is-good {
+  color: var(--good);
+}
+
+.form-inline-feedback.is-warn {
+  color: var(--warn);
+}
+
+.form-inline-feedback.is-error {
+  color: var(--bad);
+}
+
 .prospect-banner {
   background: linear-gradient(135deg, rgba(184, 137, 45, 0.12), rgba(13, 92, 99, 0.08));
   border-color: rgba(184, 137, 45, 0.2);

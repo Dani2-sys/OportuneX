@@ -42,10 +42,12 @@ export function moneyToMajor(money) {
 export function formatMoney(money, fallback = "Not determined") {
   if (!money) return fallback;
   const amount = money.amountMinor / 100;
+  const minimumFractionDigits = Number.isInteger(amount) ? 0 : 2;
   const formatted = new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: money.currency || "EUR",
-    maximumFractionDigits: 0
+    minimumFractionDigits,
+    maximumFractionDigits: 2
   }).format(amount);
   if (money.vatStatus === "excluding") return `${formatted} excl. VAT`;
   if (money.vatStatus === "including") return `${formatted} incl. VAT`;

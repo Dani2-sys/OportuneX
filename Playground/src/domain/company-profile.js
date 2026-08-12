@@ -427,6 +427,51 @@ export function isStalePublicFact(fact, now = new Date()) {
   return true;
 }
 
+export function assessFactCurrentness(
+  fact,
+  now = new Date(),
+  { maxAgeDays = 365, maxReferenceYearLag = 0, allowUndatedCompanyConfirmed = true } = {}
+) {
+  const status = getFactStatus(fact);
+  if (status === "unknown" || status === "conflicted") {
+    return {
+      current: false,
+      stale: false,
+      dated: false,
+      basis: "unknown"
+    };
+  }
+
+  if (fact?.referenceYear != null) {
+    const yearLag = now.getFullYear() - fact.referenceYear;
+    return {
+      current: yearLag <= maxReferenceYearLag,
+      stale: yearLag > maxReferenceYearLag,
+      dated: true,
+      basis: "reference_year",
+      yearLag
+    };
+  }
+
+  if (fact?.asOfDate) {
+    const ageDays = Math.round((now - new Date(fact.asOfDate)) / 86400000);
+    return {
+      current: ageDays <= maxAgeDays,
+      stale: ageDays > maxAgeDays,
+      dated: true,
+      basis: "as_of_date",
+      ageDays
+    };
+  }
+
+  return {
+    current: status === "company_confirmed" ? allowUndatedCompanyConfirmed : false,
+    stale: status !== "company_confirmed",
+    dated: false,
+    basis: "undated"
+  };
+}
+
 export function factCanConfirmEligibility(fact, now = new Date()) {
   const status = getFactStatus(fact);
   if (status === "unknown" || status === "conflicted") return false;
@@ -435,8 +480,17 @@ export function factCanConfirmEligibility(fact, now = new Date()) {
   return false;
 }
 
+export function factCanConfirmCurrentEligibility(fact, now = new Date(), options = {}) {
+  if (!factCanConfirmEligibility(fact, now)) return false;
+  return assessFactCurrentness(fact, now, options).current;
+}
+
 export function rangeCanConfirmEligibility(range, now = new Date()) {
   return factCanConfirmEligibility(range, now) && getRangeValue(range) != null;
+}
+
+export function rangeCanConfirmCurrentEligibility(range, now = new Date(), options = {}) {
+  return factCanConfirmCurrentEligibility(range, now, options) && getRangeValue(range) != null;
 }
 
 function formatIntegerRange(min, max) {

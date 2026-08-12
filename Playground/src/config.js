@@ -1,3 +1,5 @@
+import { APP_PHASE } from "./phase.js";
+
 export const APP_TITLE = "OportuneX";
 
 export const NAV_ITEMS = [
@@ -14,7 +16,7 @@ export const NAV_ITEMS = [
 
 export const DEFAULT_RUNTIME = {
   appName: APP_TITLE,
-  appPhase: "phase-0.3",
+  appPhase: APP_PHASE,
   ai: {
     provider: "mock",
     status: "mock",
@@ -55,20 +57,25 @@ export const DEFAULT_RUNTIME = {
   }
 };
 
-export const RECOMMENDATION_COPY = {
+export const FIT_BAND_COPY = {
   EXCELLENT_FIT: "Excellent Fit",
   STRONG_FIT: "Strong Fit",
   POSSIBLE_FIT: "Possible Fit",
-  LOW_PRIORITY: "Low Priority",
-  DO_NOT_PURSUE: "Do Not Pursue",
-  VERIFY_BEFORE_DECIDING: "Verify Before Deciding"
+  LOW_PRIORITY: "Low Priority"
+};
+
+export const RECOMMENDATION_COPY = FIT_BAND_COPY;
+
+export const ACTION_COPY = {
+  INVESTIGATE_NOW: "Investigate Now",
+  VERIFY_BEFORE_DECIDING: "Verify Before Deciding",
+  DO_NOT_PURSUE: "Do Not Pursue"
 };
 
 export const ELIGIBILITY_COPY = {
+  ELIGIBILITY_NOT_ASSESSED: "Eligibility Not Assessed",
   CONFIRMED_ELIGIBLE: "Confirmed Eligible",
-  LIKELY_ELIGIBLE: "Likely Eligible",
   ELIGIBILITY_UNCLEAR: "Eligibility Unclear",
-  LIKELY_INELIGIBLE: "Likely Ineligible",
   INELIGIBLE: "Ineligible"
 };
 

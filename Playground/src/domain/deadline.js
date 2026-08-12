@@ -1,6 +1,7 @@
 import { clamp, formatDate, formatIsoDate } from "../utils.js";
 
 export const SPANISH_TIME_ZONE = "Europe/Madrid";
+export const NON_ACTIONABLE_DERIVED_STATUSES = new Set(["closed", "cancelled", "awarded", "suspended"]);
 
 function pad(value) {
   return String(value).padStart(2, "0");
@@ -111,6 +112,14 @@ export function deriveStatus(opportunity, now = new Date()) {
   if (startDate && calendarDayDiff(currentYmd(now), startDate) > 0) return "upcoming";
 
   return "open";
+}
+
+export function isNonActionableDerivedStatus(status) {
+  return NON_ACTIONABLE_DERIVED_STATUSES.has(status);
+}
+
+export function isActiveDerivedStatus(status) {
+  return !isNonActionableDerivedStatus(status);
 }
 
 export function deadlineFeasibilityScore(opportunity, now = new Date()) {

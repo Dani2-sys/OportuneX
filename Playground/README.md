@@ -1,4 +1,4 @@
-# OportuneX Phase 0.3
+# OportuneX Phase 0.3.2
 
 OportuneX is a decision-grade public-opportunity intelligence workspace for Spanish SMEs.
 
@@ -15,7 +15,7 @@ This Phase 0 build focuses on the **Intelligence Lab**:
 
 The current build uses a **browser-local Phase 0 persistence adapter** for fast manual validation, while also shipping a normalized PostgreSQL schema scaffold in [`database/schema.sql`](database/schema.sql).
 
-Phase 0.3 is the correctness-hardening pass. It strengthens comparable-experience checks, keeps evidence coverage separate from eligibility confidence, preserves monetary categories, and normalizes deadline handling to `Europe/Madrid`.
+Phase 0.3.2 is the correctness-hardening pass. It strengthens comparable-experience checks, keeps evidence coverage separate from eligibility confidence, preserves monetary categories, normalizes deadline handling to `Europe/Madrid`, and hardens import and browser-local persistence behavior.
 
 ## Stack
 

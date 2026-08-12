@@ -1,7 +1,21 @@
+const CANONICAL_ACTIONS = [
+  "INVESTIGATE_NOW",
+  "VERIFY_BEFORE_DECIDING",
+  "DO_NOT_PURSUE"
+];
+
+const CANONICAL_FIT_BANDS = [
+  "EXCELLENT_FIT",
+  "STRONG_FIT",
+  "POSSIBLE_FIT",
+  "LOW_PRIORITY",
+  "DO_NOT_PURSUE"
+];
+
 export const verificationSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["review_status", "warnings", "disagreements", "corrected_recommendation", "confidence", "notes"],
+  required: ["review_status", "warnings", "disagreements", "corrected_action", "corrected_fit_band", "confidence", "notes"],
   properties: {
     review_status: {
       type: "string",
@@ -19,18 +33,22 @@ export const verificationSchema = {
         type: "string"
       }
     },
-    corrected_recommendation: {
+    corrected_action: {
       anyOf: [
         {
           type: "string",
-          enum: [
-            "EXCELLENT_FIT",
-            "STRONG_FIT",
-            "POSSIBLE_FIT",
-            "LOW_PRIORITY",
-            "DO_NOT_PURSUE",
-            "VERIFY_BEFORE_DECIDING"
-          ]
+          enum: CANONICAL_ACTIONS
+        },
+        {
+          type: "null"
+        }
+      ]
+    },
+    corrected_fit_band: {
+      anyOf: [
+        {
+          type: "string",
+          enum: CANONICAL_FIT_BANDS
         },
         {
           type: "null"
@@ -47,9 +65,8 @@ export const verificationSchema = {
   }
 };
 
-const recommendationSet = new Set(
-  verificationSchema.properties.corrected_recommendation.anyOf[0].enum
-);
+const actionSet = new Set(verificationSchema.properties.corrected_action.anyOf[0].enum);
+const fitBandSet = new Set(verificationSchema.properties.corrected_fit_band.anyOf[0].enum);
 const reviewStatusSet = new Set(verificationSchema.properties.review_status.enum);
 const confidenceSet = new Set(verificationSchema.properties.confidence.enum);
 
@@ -72,6 +89,20 @@ Check the opportunity, company facts and first analysis for:
 - overconfident recommendations
 
 Return only the schema-constrained verification object.
+
+Verification invariants:
+- amountMinor uses currency minor units. For EUR, 100 minor units = €1.
+- Do not treat missing recorded evidence as confirmed absence.
+- A hard requirement without company evidence is unresolved, not automatically failed.
+- Historical company evidence is not a confirmed current fact unless the requirement explicitly uses that historical period.
+- Source/data confidence is different from eligibility confidence and company-fact confidence.
+- Preserve the financial field semantics exactly as provided, including estimatedValue, awardValue, relevantValue, and maximumAidPerBeneficiary.
+- Do not invent lot semantics when the opportunity has no explicit relevant lot context.
+- Publication date or publication timestamp is not a submission deadline unless a real deadline is explicitly provided.
+- Awarded, expired, cancelled, or suspended notices are hard-stop/non-actionable states, and active-pursuit diagnostics should be secondary.
+- corrected_action must use the canonical action vocabulary: ${CANONICAL_ACTIONS.join(", ")}.
+- corrected_fit_band must use the canonical fit-band vocabulary: ${CANONICAL_FIT_BANDS.join(", ")}.
+- VERIFY_BEFORE_DECIDING is an action, not a fit band, and must never appear in corrected_fit_band.
 
 Opportunity:
 ${JSON.stringify(payload.opportunity, null, 2)}
@@ -138,10 +169,22 @@ export function validateVerificationResult(result) {
     return "disagreements must be an array of strings.";
   }
   if (
-    result.corrected_recommendation !== null &&
-    !recommendationSet.has(result.corrected_recommendation)
+    result.corrected_action !== null &&
+    !actionSet.has(result.corrected_action)
   ) {
-    return "corrected_recommendation must be null or a known recommendation class.";
+    return "corrected_action must be null or a known canonical action.";
+  }
+  if (
+    result.corrected_fit_band !== null &&
+    actionSet.has(result.corrected_fit_band)
+  ) {
+    return "corrected_fit_band must use canonical fit-band values, not action values.";
+  }
+  if (
+    result.corrected_fit_band !== null &&
+    !fitBandSet.has(result.corrected_fit_band)
+  ) {
+    return "corrected_fit_band must be null or a known fit band.";
   }
   if (!confidenceSet.has(result.confidence)) {
     return "confidence must be high, medium, or low.";

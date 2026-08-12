@@ -169,25 +169,40 @@ futureStart.id = "opp-upcoming";
 futureStart.startDate = "2026-08-20";
 
 export const evaluationFixtures = [
-  fixture("eval-01", "ideal matching tender", excellentFit, { recommendationClass: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
-  fixture("eval-02", "irrelevant tender with matching keyword", outsideGeography, { recommendationClass: "LOW_PRIORITY", rejectedReasonIncludes: "Low fit", relevant: false }),
+  fixture("eval-01", "ideal matching tender", excellentFit, { recommendedActionCode: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
+  fixture("eval-02", "irrelevant tender with matching keyword", outsideGeography, {
+    recommendedActionCode: "VERIFY_BEFORE_DECIDING",
+    fitBand: "LOW_PRIORITY",
+    rejectedReasonIncludes: "Potential hard blocker",
+    relevant: false
+  }),
   fixture("eval-03", "expired tender", expired, { active: false, rejectedReasonIncludes: "Deadline passed", relevant: false }),
   fixture("eval-04", "cancelled tender", cancelled, { active: false, rejectedReasonIncludes: "Cancelled", relevant: false }),
-  fixture("eval-05", "award notice", awardNotice, { active: false, rejectedReasonIncludes: "Award notice", relevant: false }),
+  fixture("eval-05", "award notice", awardNotice, { active: false, rejectedReasonIncludes: "Already awarded", relevant: false }),
   fixture("eval-06", "large tender with small relevant lot", lotOverride, { active: true, valueIncludes: "€96,000", relevant: true }),
-  fixture("eval-07", "tender with unknown mandatory certification", unknownCertification, { recommendationClass: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
-  fixture("eval-08", "tender with confirmed certification failure", confirmedCertificationFailure, { recommendationClass: "DO_NOT_PURSUE", active: false, relevant: false, hardBlocked: true }),
+  fixture("eval-07", "tender with unknown mandatory certification", unknownCertification, { recommendedActionCode: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
+  fixture("eval-08", "tender with confirmed certification failure", confirmedCertificationFailure, { recommendedActionCode: "DO_NOT_PURSUE", active: false, relevant: false, hardBlocked: true }),
   fixture("eval-09", "tender with amended deadline", amendedDeadline, { active: true, deadlineIncludes: "04/09/2026", relevant: true }),
-  fixture("eval-10", "conflicting source data", conflictingSources, { recommendationClass: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
-  fixture("eval-11", "grant programme budget not company maximum", grantFit, { active: true, companyAmountIncludes: "Up to €40,000", relevant: true }),
-  fixture("eval-12", "grant with unknown beneficiary maximum", unknownMaxGrant, { active: true, companyAmountIncludes: "Not determined", relevant: true }),
-  fixture("eval-13", "grant outside company region", wrongRegionGrant, { recommendationClass: "DO_NOT_PURSUE", active: false, relevant: false }),
-  fixture("eval-14", "grant wrong eligible beneficiary", wrongBeneficiaryGrant, { recommendationClass: "DO_NOT_PURSUE", active: false, relevant: false }),
-  fixture("eval-15", "grant requiring co-financing", grantFit, { recommendationClass: "STRONG_FIT", active: true, relevant: true }),
-  fixture("eval-16", "grant with de minimis consideration", deMinimisGrant, { recommendationClass: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
+  fixture("eval-10", "conflicting source data", conflictingSources, { recommendedActionCode: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
+  fixture("eval-11", "grant programme budget not company maximum", grantFit, { active: true, companyAmountIncludes: "€40,000", relevant: true }),
+  fixture("eval-12", "grant with unknown beneficiary maximum", unknownMaxGrant, { active: true, companyAmountIncludes: "not yet verified", relevant: true }),
+  fixture("eval-13", "grant outside company region", wrongRegionGrant, {
+    recommendedActionCode: "DO_NOT_PURSUE",
+    active: false,
+    rejectedReasonIncludes: "Project located in Catalonia",
+    relevant: false
+  }),
+  fixture("eval-14", "grant wrong eligible beneficiary", wrongBeneficiaryGrant, {
+    recommendedActionCode: "DO_NOT_PURSUE",
+    active: false,
+    rejectedReasonIncludes: "Beneficiary must be a cooperative",
+    relevant: false
+  }),
+  fixture("eval-15", "grant requiring co-financing", grantFit, { fitBand: "STRONG_FIT", active: true, relevant: true }),
+  fixture("eval-16", "grant with de minimis consideration", deMinimisGrant, { recommendedActionCode: "VERIFY_BEFORE_DECIDING", active: true, relevant: true }),
   fixture("eval-17", "missing application URL", missingApplicationUrl, { active: true, relevant: true }),
   fixture("eval-18", "different contact roles", contactRoles, { active: true, relevant: true }),
-  fixture("eval-19", "malicious prompt-injection text", injectionText, { active: true, recommendationClass: "VERIFY_BEFORE_DECIDING", relevant: true }),
+  fixture("eval-19", "malicious prompt-injection text", injectionText, { active: true, recommendedActionCode: "VERIFY_BEFORE_DECIDING", relevant: true }),
   fixture("eval-20", "ambiguous monetary formatting", ambiguousMoney, { active: true, valueIncludes: "€96,000", relevant: true }),
   fixture("eval-21", "missing deadline time", noDeadlineTime, { active: true, deadlineIncludes: "13/09/2026", noFabricatedTime: true, relevant: true }),
   fixture("eval-22", "multilingual Catalan description", catalanText, { active: true, relevant: true }),

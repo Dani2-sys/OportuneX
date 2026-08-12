@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { APP_PHASE } from "../src/phase.js";
+
 export const DEFAULT_AI_MODELS = {
   analysisModel: "gpt-5.6-terra",
   verificationModel: "gpt-5.6-terra",
@@ -108,7 +110,7 @@ export function initialAiState(env = process.env) {
 export function createRuntimeConfig(env = process.env) {
   return {
     appName: "OportuneX",
-    appPhase: "phase-0.3",
+    appPhase: APP_PHASE,
     ai: {
       ...initialAiState(env),
       analysisModel: env.OPORTUNEX_ANALYSIS_MODEL || DEFAULT_AI_MODELS.analysisModel,

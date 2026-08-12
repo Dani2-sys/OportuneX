@@ -131,6 +131,89 @@ test("zero extracted requirements does not produce confirmed eligible", () => {
     new Date("2026-08-08T10:00:00Z")
   );
 
-  assert.equal(eligibility.eligibilityStatus, "LIKELY_ELIGIBLE");
+  assert.equal(eligibility.eligibilityStatus, "ELIGIBILITY_NOT_ASSESSED");
   assert.notEqual(eligibility.eligibilityStatus, "CONFIRMED_ELIGIBLE");
+});
+
+test("empty certification arrays remain unknown rather than confirmed missing", () => {
+  const company = importCompanyProfileFromJson(
+    JSON.stringify({
+      legalName: "Sparse Prospect SL",
+      certifications: []
+    })
+  );
+
+  const requirement = evaluateRequirement(
+    company,
+    experienceSubject(),
+    {
+      id: "req-iso9001",
+      kind: "certification",
+      label: "ISO 9001",
+      requiredValue: "ISO 9001",
+      mandatory: true,
+      gating: "hard"
+    },
+    experienceLot(),
+    new Date("2026-08-08T10:00:00Z")
+  );
+
+  assert.equal(requirement.status, "needs_verification");
+});
+
+test("empty insurance arrays remain unknown rather than confirmed failing", () => {
+  const company = importCompanyProfileFromJson(
+    JSON.stringify({
+      legalName: "Sparse Prospect SL",
+      insurance: []
+    })
+  );
+
+  const requirement = evaluateRequirement(
+    company,
+    experienceSubject(),
+    {
+      id: "req-insurance",
+      kind: "insurance",
+      label: "Civil liability insurance",
+      requiredValue: "civil_liability",
+      minimumAmount: 300000,
+      mandatory: true,
+      gating: "hard"
+    },
+    experienceLot(),
+    new Date("2026-08-08T10:00:00Z")
+  );
+
+  assert.equal(requirement.status, "needs_verification");
+});
+
+test("empty representative project arrays remain unknown rather than confirmed failing", () => {
+  const company = importCompanyProfileFromJson(
+    JSON.stringify({
+      legalName: "Sparse Prospect SL",
+      experience: {
+        representativeProjects: []
+      }
+    })
+  );
+
+  const requirement = evaluateRequirement(
+    company,
+    experienceSubject(),
+    {
+      id: "req-public-exp",
+      kind: "public_experience",
+      label: "At least one comparable public maintenance contract",
+      minimumCount: 1,
+      minimumAmount: 60000,
+      lookbackYears: 3,
+      mandatory: true,
+      gating: "hard"
+    },
+    experienceLot(),
+    new Date("2026-08-08T10:00:00Z")
+  );
+
+  assert.equal(requirement.status, "needs_verification");
 });

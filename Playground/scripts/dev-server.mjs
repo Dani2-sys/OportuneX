@@ -88,7 +88,8 @@ function mockVerification(payload) {
     review_status: warnings.length ? "needs_review" : "accepted",
     warnings,
     disagreements: [],
-    corrected_recommendation: analysis.recommendationClass ?? null,
+    corrected_action: analysis.decision?.recommendedAction?.code ?? null,
+    corrected_fit_band: analysis.fitBand ?? analysis.recommendationClass ?? null,
     confidence: analysis.confidenceShield?.label?.toLowerCase?.() ?? "medium",
     notes: "Mock verification used because live OpenAI verification is not configured.",
     aiRuntime: snapshotAiRuntime()

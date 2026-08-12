@@ -95,9 +95,24 @@ test("electrical maintenance demo now stops at verification for comparable publi
   const portfolio = analyzePortfolio(state.companyProfiles[0], state.opportunities, runtime, getEvaluationNow());
   const match = portfolio.recommended.find((item) => item.opportunityId === "opp-electrical-maintenance");
 
-  assert.equal(match.recommendationClass, "VERIFY_BEFORE_DECIDING");
+  assert.equal(match.decision.recommendedAction.code, "VERIFY_BEFORE_DECIDING");
+  assert.equal(match.decision.recommendedAction.bucket, "needs_verification");
+  assert.equal(match.decision.match.band, match.recommendationClass);
   assert.equal(match.eligibilityStatus, "ELIGIBILITY_UNCLEAR");
-  assert.ok(match.unknowns.some((item) => item.title === "At least one comparable public maintenance contract"));
+  assert.ok(match.potentialHardBlockers.some((item) => item.title === "At least one comparable public maintenance contract"));
+  assert.match(match.decision.mainReason, /Potential hard blocker/i);
+});
+
+test("expired opportunities remain hard-stopped as do-not-pursue decisions", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const portfolio = analyzePortfolio(state.companyProfiles[0], state.opportunities, runtime, getEvaluationNow());
+  const match = portfolio.analysed.find((item) => item.opportunityId === "opp-expired-maintenance");
+
+  assert.equal(match.decision.recommendedAction.code, "DO_NOT_PURSUE");
+  assert.equal(match.decision.recommendedAction.bucket, "not_suitable");
+  assert.equal(match.decision.mainReason, "Deadline passed");
+  assert.ok(portfolio.buckets.notSuitable.some((item) => item.opportunityId === "opp-expired-maintenance"));
 });
 
 test("report keeps eligibility requirements separate from submission documents", () => {
@@ -146,6 +161,11 @@ test("synthetic default lots do not relabel whole-contract estimated value as a 
   assert.ok(lines.every((line) => !line.label.startsWith("Relevant ")));
   assert.equal(lines.filter((line) => line.displayValue === "€100,000 excl. VAT").length, 1);
   assert.ok(!lines.some((line) => line.id === "estimated_value"));
+  assert.equal(result.bestMatch.hasPublishedLot, false);
+  assert.equal(result.bestMatch.lotLabel, null);
+  assert.match(result.bestMatch.reportMarkdown, /\*\*Scope:\*\* Whole opportunity/);
+  assert.doesNotMatch(result.bestMatch.reportMarkdown, /Relevant lot/i);
+  assert.doesNotMatch(result.bestMatch.reportMarkdown, /lot value/i);
 });
 
 test("published lot value remains the primary relevant lot amount", () => {
@@ -174,4 +194,128 @@ test("published lot value remains the primary relevant lot amount", () => {
   assert.equal(result.bestMatch.financialPicture?.primaryLine?.label, "Relevant Lot 1");
   assert.equal(result.bestMatch.displayValueLabel, "€25,000 excl. VAT");
   assert.equal(lines.estimated_value?.displayValue, "€100,000 excl. VAT");
+});
+
+test("award notices keep awarded value semantics and suppress active-pursuit blockers", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const opportunity = makeContractOpportunity({
+    id: "opp-award-value-only",
+    title: "Award notice for electrical maintenance",
+    estimatedMajor: 100000
+  });
+  opportunity.noticeType = "award_notice";
+  opportunity.status = "awarded";
+  opportunity.publicationDate = "2026-08-06";
+  opportunity.deadline = null;
+  opportunity.estimatedValue = null;
+  opportunity.relevantValue = null;
+  opportunity.awardValue = createMoney({ major: 300000, amountType: "award_value", vatStatus: "excluding" });
+
+  const result = analyzeOpportunity(state.companyProfiles[0], opportunity, runtime, getEvaluationNow());
+  const lines = Object.fromEntries((result.bestMatch.financialPicture?.lines ?? []).map((line) => [line.id, line]));
+
+  assert.equal(result.bestMatch.financialPicture?.primaryLine?.label, "Awarded contract value");
+  assert.equal(result.bestMatch.displayValueLabel, "€300,000 excl. VAT");
+  assert.equal(lines.award_value, undefined);
+  assert.ok(!result.bestMatch.risks.some((risk) => ["missing-contact", "missing-submission-route"].includes(risk.id)));
+  assert.ok(result.bestMatch.preMortem.every((item) => !/preparation window|requirement load/i.test(item)));
+  assert.equal(result.bestMatch.decision.recommendedAction.code, "DO_NOT_PURSUE");
+  assert.equal(result.bestMatch.decision.mainReason, "Already awarded / not an open opportunity.");
+});
+
+test("guarantees without linked evidence are explicitly marked as unverified", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const opportunity = makeContractOpportunity({
+    id: "opp-unverified-guarantee",
+    title: "Contract with unlinked guarantee",
+    estimatedMajor: 100000
+  });
+  opportunity.guarantees = "Definitive guarantee 5%";
+
+  const result = analyzeOpportunity(state.companyProfiles[0], opportunity, runtime, getEvaluationNow());
+
+  assert.match(result.bestMatch.reportMarkdown, /Guarantees: Definitive guarantee 5% \(unverified from linked sources\)/);
+});
+
+test("report marks potential hard blockers as not yet assessable when qualification requirements were not retrieved", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const opportunity = makeContractOpportunity({
+    id: "opp-no-retrieved-requirements",
+    title: "Contract without retrieved qualification dossier",
+    estimatedMajor: 100000
+  });
+
+  const result = analyzeOpportunity(state.companyProfiles[0], opportunity, runtime, getEvaluationNow());
+
+  assert.equal(result.bestMatch.eligibilityStatus, "ELIGIBILITY_NOT_ASSESSED");
+  assert.match(
+    result.bestMatch.reportMarkdown,
+    /Potential hard blockers: Not yet assessable - qualification requirements have not been retrieved\./
+  );
+  assert.doesNotMatch(result.bestMatch.reportMarkdown, /Potential hard blockers: None recorded/);
+});
+
+test("confidence shield does not overstate verification when a hard gate is unresolved", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const opportunity = makeContractOpportunity({
+    id: "opp-high-source-low-eligibility",
+    title: "High-source-evidence contract",
+    estimatedMajor: 100000,
+    lots: [
+      {
+        id: "lot-1",
+        title: "Lot 1",
+        description: "Electrical maintenance",
+        cpvCodes: ["50711000", "45315300"],
+        keywords: ["electrical maintenance"],
+        value: createMoney({ major: 100000, amountType: "relevant_lot_value", vatStatus: "excluding" }),
+        requirements: [
+          {
+            id: "req-hard-classification",
+            kind: "custom",
+            label: "Required specialist classification",
+            mandatory: true,
+            gating: "hard",
+            evidenceIds: []
+          }
+        ]
+      }
+    ]
+  });
+  opportunity.contacts = [{ role: "authority", name: "Ajuntament", email: "authority@example.com" }];
+  opportunity.sources = [{ id: "src-1", organisation: "Ajuntament", title: "Official notice", url: "https://example.com", official: true, publishedAt: "2026-08-01", lastChecked: "2026-08-07T08:00:00Z" }];
+  opportunity.noticeUrl = "https://example.com";
+  opportunity.applicationUrl = "https://example.com/apply";
+  opportunity.evidence = [
+    "status",
+    "deadline",
+    "lot_value",
+    "location",
+    "requirements",
+    "submission_route",
+    "official_notice",
+    "contacts"
+  ].map((fieldKey, index) => ({
+    id: `ev-${index + 1}`,
+    fieldKey,
+    excerpt: `${fieldKey} evidence`,
+    sourceId: "src-1",
+    confidence: 0.95
+  }));
+
+  const result = analyzeOpportunity(state.companyProfiles[0], opportunity, runtime, getEvaluationNow());
+
+  assert.equal(result.bestMatch.confidenceShield.dataConfidence, "HIGH");
+  assert.notEqual(result.bestMatch.confidenceShield.eligibilityConfidence, "HIGH");
+  assert.notEqual(result.bestMatch.confidenceShield.decisionConfidence, "HIGH");
+  assert.match(
+    result.bestMatch.confidenceShield.criticalFieldSummary,
+    /qualification or specialist-scope evidence remains incomplete/i
+  );
+  assert.doesNotMatch(result.bestMatch.reportMarkdown, /All critical fields verified/i);
+  assert.match(result.bestMatch.reportMarkdown, /Critical field summary: Source-critical dossier fields are evidenced, but qualification or specialist-scope evidence remains incomplete\./i);
 });

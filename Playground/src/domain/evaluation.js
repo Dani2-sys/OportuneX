@@ -8,31 +8,41 @@ export function runEvaluationSuite(fixtures, runtime, now = new Date("2026-08-07
   const results = fixtures.map((fixture) => {
     const outcome = analyzeOpportunity(fixture.company, fixture.opportunity, runtime, now);
     const match = outcome.bestMatch;
+    const actionCode = match?.decision?.recommendedAction?.code ?? null;
+    const fitBand = match?.fitBand ?? match?.recommendationClass ?? null;
+    const decisionReason = match?.decision?.mainReason ?? null;
     const checks = [];
     const expected = fixture.expected;
 
     if ("active" in expected) {
       const active =
         Boolean(match) &&
-        !outcome.rejectedReason &&
-        !["DO_NOT_PURSUE"].includes(match?.recommendationClass);
+        actionCode !== "DO_NOT_PURSUE";
       checks.push({
         label: "active state",
         pass: active === expected.active
       });
     }
 
-    if (expected.recommendationClass) {
+    if (expected.fitBand || expected.recommendationClass) {
+      const expectedFitBand = expected.fitBand ?? expected.recommendationClass;
       checks.push({
-        label: "recommendation class",
-        pass: match?.recommendationClass === expected.recommendationClass
+        label: "fit band",
+        pass: fitBand === expectedFitBand
+      });
+    }
+
+    if (expected.recommendedActionCode) {
+      checks.push({
+        label: "recommended action",
+        pass: actionCode === expected.recommendedActionCode
       });
     }
 
     if (expected.rejectedReasonIncludes) {
       checks.push({
         label: "rejected reason",
-        pass: includes(outcome.rejectedReason, expected.rejectedReasonIncludes)
+        pass: includes(decisionReason, expected.rejectedReasonIncludes)
       });
     }
 
@@ -67,7 +77,7 @@ export function runEvaluationSuite(fixtures, runtime, now = new Date("2026-08-07
     if (expected.hardBlocked) {
       checks.push({
         label: "hard blocker respected",
-        pass: match?.recommendationClass === "DO_NOT_PURSUE"
+        pass: actionCode === "DO_NOT_PURSUE"
       });
     }
 
@@ -77,18 +87,20 @@ export function runEvaluationSuite(fixtures, runtime, now = new Date("2026-08-07
       title: fixture.title,
       passed,
       checks,
+      recommendedActionCode: actionCode,
+      fitBand,
       recommendationClass: match?.recommendationClass ?? null,
-      rejectedReason: outcome.rejectedReason ?? null,
+      rejectedReason: decisionReason,
       relevant: expected.relevant
     };
   });
 
   const relevantFixtures = results.filter((result) => result.relevant);
   const recommendedRelevant = relevantFixtures.filter(
-    (result) => result.recommendationClass && result.recommendationClass !== "DO_NOT_PURSUE"
+    (result) => result.recommendedActionCode && result.recommendedActionCode !== "DO_NOT_PURSUE"
   );
   const recommendedAll = results.filter(
-    (result) => result.recommendationClass && !["DO_NOT_PURSUE", "LOW_PRIORITY"].includes(result.recommendationClass)
+    (result) => result.recommendedActionCode && result.recommendedActionCode !== "DO_NOT_PURSUE"
   );
   const hardBlockers = results.filter((result) => result.checks.some((check) => check.label === "hard blocker respected"));
   const moneyChecks = results.filter((result) =>

@@ -60,6 +60,23 @@ function makeProspectCompany() {
   return company;
 }
 
+function makeBroadOnlyProspectCompany() {
+  const company = makeProspectCompany();
+  company.capabilities = [
+    {
+      id: "maintenance-broad",
+      label: "Building and industrial maintenance",
+      level: "low",
+      strength: "low",
+      status: "public_verified",
+      aliases: ["maintenance"],
+      cpvPrefixes: ["5000"],
+      sourceIds: ["website-source"]
+    }
+  ];
+  return company;
+}
+
 function makeEvidence() {
   return [
     "status",
@@ -167,7 +184,7 @@ test("low scale fit alone does not create fake legal ineligibility", () => {
   const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
 
   assert.notEqual(result.bestMatch.eligibilityStatus, "INELIGIBLE");
-  assert.notEqual(result.bestMatch.eligibilityStatus, "LIKELY_INELIGIBLE");
+  assert.equal(result.bestMatch.decision.recommendedAction.code, "VERIFY_BEFORE_DECIDING");
 });
 
 test("unknown mandatory requirement remains unknown and reduces confidence", () => {
@@ -192,13 +209,101 @@ test("unknown mandatory requirement remains unknown and reduces confidence", () 
   const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
 
   assert.equal(result.bestMatch.eligibilityStatus, "ELIGIBILITY_UNCLEAR");
-  assert.equal(result.bestMatch.recommendationClass, "VERIFY_BEFORE_DECIDING");
+  assert.equal(result.bestMatch.decision.recommendedAction.code, "VERIFY_BEFORE_DECIDING");
+  assert.equal(result.bestMatch.decision.match.band, result.bestMatch.recommendationClass);
   assert.equal(result.bestMatch.requirementRows[0].status, "needs_verification");
+  assert.equal(result.bestMatch.potentialHardBlockers.length, 1);
+  assert.equal(result.bestMatch.unknowns.length, 0);
+  assert.match(result.bestMatch.decision.mainReason, /Potential hard blocker/i);
+  assert.ok(result.bestMatch.dimensions.baseCapabilityFit >= 90);
+  assert.ok(result.bestMatch.dimensions.specialistScopeConfidence <= 44);
+  assert.ok(result.bestMatch.dimensions.qualificationReadiness < result.bestMatch.dimensions.baseCapabilityFit);
   assert.equal(result.bestMatch.confidenceShield.sourceFieldsEvidenced, 8);
   assert.equal(result.bestMatch.confidenceShield.totalSourceFields, 8);
   assert.equal(result.bestMatch.confidenceShield.dataConfidence, "HIGH");
   assert.notEqual(result.bestMatch.confidenceShield.eligibilityConfidence, "HIGH");
+  assert.notEqual(result.bestMatch.confidenceShield.companyFactConfidence, "HIGH");
+  assert.equal(result.bestMatch.confidenceShield.label, result.bestMatch.confidenceShield.decisionConfidence);
   assert.notEqual(result.bestMatch.confidenceShield.label, "HIGH");
+  assert.match(result.bestMatch.reportMarkdown, /Potential hard blocker/i);
+  assert.match(result.bestMatch.reportMarkdown, /No confirmed blocker recorded, but potential hard blockers remain\./i);
+});
+
+test("broad public capability does not establish specialist delivery scope or classification", () => {
+  const runtime = getRuntimeConfig();
+  const company = makeProspectCompany();
+  const opportunity = makeOpportunity({
+    id: "opp-specialist-scope-gap",
+    valueMajor: 140000,
+    requirements: [
+      {
+        id: "req-public-portfolio",
+        kind: "public_experience",
+        label: "Comparable public-sector delivery references",
+        minimumCount: 1,
+        minimumAmount: 90000,
+        lookbackYears: 3,
+        mandatory: true,
+        gating: "hard",
+        evidenceIds: ["ev-5"]
+      },
+      {
+        id: "req-specialist-classification",
+        kind: "custom",
+        label: "Specialist delivery classification",
+        mandatory: true,
+        gating: "hard",
+        evidenceIds: ["ev-5"]
+      },
+      {
+        id: "req-monitoring-competence",
+        kind: "custom",
+        label: "Monitoring competence confirmation",
+        mandatory: true,
+        gating: "hard",
+        evidenceIds: ["ev-5"]
+      }
+    ]
+  });
+  const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
+
+  assert.ok(result.bestMatch.dimensions.baseCapabilityFit >= 90);
+  assert.ok(result.bestMatch.dimensions.specialistScopeConfidence <= 44);
+  assert.equal(result.bestMatch.decision.recommendedAction.code, "VERIFY_BEFORE_DECIDING");
+  assert.equal(result.bestMatch.potentialHardBlockers.length, 3);
+  assert.match(result.bestMatch.decision.mainReason, /Potential hard blocker/i);
+});
+
+test("medium capability and zero qualification readiness cannot produce a strong executive verdict", () => {
+  const runtime = getRuntimeConfig();
+  const company = makeBroadOnlyProspectCompany();
+  const opportunity = makeOpportunity({
+    id: "opp-medium-capability-zero-readiness",
+    valueMajor: 120000,
+    requirements: [
+      {
+        id: "req-hard-classification",
+        kind: "custom",
+        label: "Required specialist classification",
+        mandatory: true,
+        gating: "hard",
+        evidenceIds: ["ev-5"]
+      }
+    ]
+  });
+  const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
+
+  assert.ok(result.bestMatch.dimensions.baseCapabilityFit > 0 && result.bestMatch.dimensions.baseCapabilityFit < 60);
+  assert.ok(result.bestMatch.dimensions.specialistScopeConfidence < 45);
+  assert.ok(result.bestMatch.dimensions.financialScaleFit < 75);
+  assert.equal(result.bestMatch.dimensions.qualificationReadiness, 0);
+  assert.doesNotMatch(
+    result.bestMatch.executiveVerdict,
+    /strong capability fit|are currently strong|qualification evidence is currently strong|broadly compatible/i
+  );
+  assert.match(result.bestMatch.executiveVerdict, /partial technical overlap|limited technical overlap/i);
+  assert.match(result.bestMatch.executiveVerdict, /Qualification readiness is currently unproven|Potential hard blocker/i);
+  assert.match(result.bestMatch.reportMarkdown, /Potential hard blocker/i);
 });
 
 test("confirmed hard eligibility failure forces do-not-pursue", () => {
@@ -233,7 +338,8 @@ test("confirmed hard eligibility failure forces do-not-pursue", () => {
   const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
 
   assert.equal(result.bestMatch.eligibilityStatus, "INELIGIBLE");
-  assert.equal(result.bestMatch.recommendationClass, "DO_NOT_PURSUE");
+  assert.equal(result.bestMatch.decision.recommendedAction.code, "DO_NOT_PURSUE");
+  assert.equal(result.bestMatch.decision.match.band, result.bestMatch.recommendationClass);
   assert.equal(result.bestMatch.confidenceShield.hardMandatoryFailed, 1);
   assert.equal(result.bestMatch.confidenceShield.label, "LOW");
 });
@@ -245,5 +351,7 @@ test("irrelevant unknown fields do not unnecessarily penalise unrelated opportun
   const result = analyzeOpportunity(company, opportunity, runtime, new Date("2026-08-08T10:00:00Z"));
 
   assert.equal(result.bestMatch.unknowns.length, 0);
-  assert.equal(result.bestMatch.confidenceShield.label, "HIGH");
+  assert.equal(result.bestMatch.eligibilityStatus, "ELIGIBILITY_NOT_ASSESSED");
+  assert.equal(result.bestMatch.decision.recommendedAction.code, "VERIFY_BEFORE_DECIDING");
+  assert.equal(result.bestMatch.confidenceShield.label, "LOW");
 });

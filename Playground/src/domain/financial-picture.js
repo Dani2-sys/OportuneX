@@ -32,6 +32,27 @@ function compact(lines) {
   return lines.filter(Boolean);
 }
 
+function labelForAmountType(amountType, fallback, { explicitLotEvidence = false } = {}) {
+  switch (amountType) {
+    case "relevant_lot_value":
+      return explicitLotEvidence ? "Relevant lot value" : fallback;
+    case "estimated_value":
+      return "Estimated contract value";
+    case "award_value":
+      return "Awarded contract value";
+    case "base_budget":
+      return "Base / tender budget";
+    case "whole_procedure_value":
+      return "Whole procedure value";
+    case "annual_value":
+      return "Annual value";
+    case "multi_year_value":
+      return "Multi-year value";
+    default:
+      return fallback;
+  }
+}
+
 export function buildFinancialPicture(opportunity, lot = null) {
   if (opportunity.type === "grant") {
     const lines = compact([
@@ -52,6 +73,7 @@ export function buildFinancialPicture(opportunity, lot = null) {
   }
 
   const publishedLot = lot?.synthetic ? null : lot;
+  const explicitLotEvidence = Boolean(publishedLot?.value);
   const primarySource = publishedLot?.value
     ? "published_lot"
     : opportunity.relevantValue
@@ -60,23 +82,39 @@ export function buildFinancialPicture(opportunity, lot = null) {
         ? "estimated_value"
         : opportunity.baseBudget
           ? "base_budget"
-          : null;
-  const hasLotSpecificPrimary = Boolean(publishedLot?.value || opportunity.relevantValue);
+          : opportunity.wholeProcedureValue
+            ? "whole_procedure_value"
+            : opportunity.awardValue
+              ? "award_value"
+              : opportunity.annualValue
+                ? "annual_value"
+                : opportunity.multiYearValue
+                  ? "multi_year_value"
+                  : null;
+  const primaryMoney =
+    publishedLot?.value ??
+    opportunity.relevantValue ??
+    opportunity.estimatedValue ??
+    opportunity.baseBudget ??
+    opportunity.wholeProcedureValue ??
+    opportunity.awardValue ??
+    opportunity.annualValue ??
+    opportunity.multiYearValue ??
+    null;
+  const hasLotSpecificPrimary = explicitLotEvidence;
   const primaryLabel = primarySource === "published_lot"
     ? `Relevant ${publishedLot.title}`
     : primarySource === "relevant_value"
-      ? "Relevant lot value"
-      : primarySource === "estimated_value"
-        ? "Estimated contract value"
-        : "Base / tender budget";
+      ? (explicitLotEvidence ? "Relevant lot value" : "Published contract value")
+      : labelForAmountType(primaryMoney?.amountType, "Published contract value", { explicitLotEvidence });
 
   const lines = compact([
     buildMoneyLine(
       "primary_contract_value",
       primaryLabel,
-      publishedLot?.value ?? opportunity.relevantValue ?? opportunity.estimatedValue ?? opportunity.baseBudget,
+      primaryMoney,
       {
-        primary: true,
+        primary: Boolean(primaryMoney),
         note: "Primary value used for OportuneX assessment."
       }
     ),
@@ -90,9 +128,14 @@ export function buildFinancialPicture(opportunity, lot = null) {
       hasLotSpecificPrimary ? "Estimated total contract value" : "Estimated contract value",
       primarySource === "estimated_value" ? null : opportunity.estimatedValue
     ),
-    buildMoneyLine("whole_procedure_value", "Whole procedure value", opportunity.wholeProcedureValue),
-    buildMoneyLine("annual_value", "Annual value", opportunity.annualValue),
-    buildMoneyLine("multi_year_value", "Multi-year value", opportunity.multiYearValue)
+    buildMoneyLine("award_value", "Awarded contract value", primarySource === "award_value" ? null : opportunity.awardValue),
+    buildMoneyLine(
+      "whole_procedure_value",
+      "Whole procedure value",
+      primarySource === "whole_procedure_value" ? null : opportunity.wholeProcedureValue
+    ),
+    buildMoneyLine("annual_value", "Annual value", primarySource === "annual_value" ? null : opportunity.annualValue),
+    buildMoneyLine("multi_year_value", "Multi-year value", primarySource === "multi_year_value" ? null : opportunity.multiYearValue)
   ]);
 
   return {

@@ -1,4 +1,5 @@
 import {
+  ACTION_COPY,
   APP_TITLE,
   CONFIDENCE_COPY,
   ELIGIBILITY_COPY,
@@ -38,10 +39,11 @@ import {
   setCompanyFactUnknown
 } from "./domain/company-profile.js";
 import { runEvaluationSuite } from "./domain/evaluation.js";
-import { formatDeadline, formatLastChecked, parseSpanishDate, urgencyChip } from "./domain/deadline.js";
+import { formatDeadline, formatLastChecked, isNonActionableDerivedStatus, parseSpanishDate, urgencyChip } from "./domain/deadline.js";
+import { describeEvidenceBackedText } from "./domain/evidence.js";
 import { formatMoney, parseMoneyInput } from "./domain/money.js";
 import { importCompanyProfileFromJson } from "./services/company-importer.js";
-import { importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
+import { importOpportunityFromJson, importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
 import { runAiVerification } from "./services/ai-client.js";
 import { clamp, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
 
@@ -80,6 +82,10 @@ const AI_STATUS_COPY = {
   }
 };
 
+const STRUCTURED_OPPORTUNITY_PLACEHOLDER = "Paste structured opportunity JSON here...";
+
+const COMPANY_IMPORT_PLACEHOLDER = "Paste structured company JSON here...";
+
 const uiState = {
   route: "overview",
   selectedOpportunityId: null,
@@ -92,7 +98,13 @@ const uiState = {
   aiBusy: false,
   message: "",
   messageTone: "info",
-  draftAnswers: {}
+  draftAnswers: {},
+  companyImportDraft: "",
+  opportunityJsonDraft: "",
+  formFeedback: {
+    companyImport: null,
+    opportunityJsonImport: null
+  }
 };
 
 function getCompany(state) {
@@ -107,13 +119,31 @@ function recommendationTone(label) {
       return "good";
     case "POSSIBLE_FIT":
       return "warn";
-    case "VERIFY_BEFORE_DECIDING":
-      return "warn";
-    case "DO_NOT_PURSUE":
+    case "LOW_PRIORITY":
       return "bad";
     default:
       return "neutral";
   }
+}
+
+function fitBandOf(item) {
+  return item?.fitBand ?? item?.recommendationClass ?? null;
+}
+
+function fitBandLabelOf(item) {
+  const fitBand = fitBandOf(item);
+  return fitBand ? RECOMMENDATION_COPY[fitBand] ?? "Low Priority" : "Low Priority";
+}
+
+function primaryOpenIssue(item) {
+  return item?.potentialHardBlockers?.[0] ?? item?.unknowns?.[0] ?? item?.blockers?.[0] ?? null;
+}
+
+function actionTone(action) {
+  if (action === "INVESTIGATE_NOW") return "good";
+  if (action === "VERIFY_BEFORE_DECIDING") return "warn";
+  if (action === "DO_NOT_PURSUE") return "bad";
+  return "neutral";
 }
 
 function confidenceTone(label) {
@@ -125,6 +155,7 @@ function confidenceTone(label) {
 function eligibilityTone(label) {
   if (!label) return "neutral";
   if (label.includes("INELIGIBLE")) return "bad";
+  if (label.includes("NOT_ASSESSED")) return "warn";
   if (label.includes("UNCLEAR")) return "warn";
   return "good";
 }
@@ -188,7 +219,9 @@ function getDerived(state, runtime) {
   const visibleMatches = scopedItems
     .filter((item) => (uiState.filterType === "all" ? true : item.opportunity.type === uiState.filterType))
     .filter((item) =>
-      uiState.filterRecommendation === "all" ? true : item.recommendationClass === uiState.filterRecommendation
+      uiState.filterRecommendation === "all"
+        ? true
+        : item.decision?.recommendedAction?.code === uiState.filterRecommendation
     )
     .filter((item) => (uiState.showSavedOnly ? savedSet.has(item.opportunityId) : true))
     .sort((left, right) => sortMatches(left, right, uiState.sort));
@@ -260,6 +293,158 @@ function statCard(label, value, meta = "") {
 function setMessage(message, tone = "info") {
   uiState.message = message;
   uiState.messageTone = tone;
+}
+
+function setFormFeedback(key, message, tone = "info") {
+  uiState.formFeedback[key] = message
+    ? {
+        message,
+        tone
+      }
+    : null;
+}
+
+function clearFormFeedback(key) {
+  uiState.formFeedback[key] = null;
+}
+
+function getJsonDraftMeta(text, feedback = null) {
+  const trimmed = text.trim();
+  if (feedback?.tone === "error") return { label: "Error", tone: "bad" };
+  if (feedback?.tone === "success") return { label: "Valid", tone: "good" };
+  if (feedback?.tone === "warn") return { label: "Valid in memory", tone: "warn" };
+  if (!trimmed) return { label: "Empty", tone: "neutral" };
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return { label: "JSON detected", tone: "neutral" };
+  return { label: "Text detected", tone: "warn" };
+}
+
+function metaToneClass(meta) {
+  return meta.tone === "bad" ? "is-error" : meta.tone === "good" ? "is-good" : meta.tone === "warn" ? "is-warn" : "";
+}
+
+function feedbackToneClass(feedback) {
+  return feedback?.tone === "error"
+    ? "is-error"
+    : feedback?.tone === "success"
+      ? "is-good"
+      : feedback?.tone === "warn"
+        ? "is-warn"
+        : "";
+}
+
+function renderFormFeedback(key, draft) {
+  const feedback = uiState.formFeedback[key];
+  const meta = getJsonDraftMeta(draft, feedback);
+
+  return `
+    <div class="form-status-row full-span">
+      <span class="form-status-chip ${metaToneClass(meta)}">${escapeHtml(meta.label)}</span>
+      <p class="form-inline-feedback ${feedbackToneClass(feedback)}">${feedback ? escapeHtml(feedback.message) : ""}</p>
+    </div>
+  `;
+}
+
+function importFormKey(form) {
+  if (form?.dataset?.form === "company-import") return "companyImport";
+  if (form?.dataset?.form === "opportunity-json-import") return "opportunityJsonImport";
+  return null;
+}
+
+function importDraftField(target) {
+  if (target?.name === "companyJson") return "companyImportDraft";
+  if (target?.name === "opportunityJson") return "opportunityJsonDraft";
+  return null;
+}
+
+function refreshImportFormFeedback(form, key, draft) {
+  if (!form?.querySelector || !key) return;
+  const feedback = uiState.formFeedback[key];
+  const meta = getJsonDraftMeta(draft, feedback);
+  const chip = form.querySelector(".form-status-chip");
+  const feedbackNode = form.querySelector(".form-inline-feedback");
+
+  if (chip) {
+    chip.className = `form-status-chip ${metaToneClass(meta)}`.trim();
+    chip.textContent = meta.label;
+  }
+
+  if (feedbackNode) {
+    feedbackNode.className = `form-inline-feedback ${feedbackToneClass(feedback)}`.trim();
+    feedbackNode.textContent = feedback?.message ?? "";
+  }
+}
+
+function syncImportDraftFromInput(form, target) {
+  const key = importFormKey(form);
+  const draftField = importDraftField(target);
+  if (!key || !draftField) return false;
+  uiState[draftField] = target?.value?.toString?.() ?? "";
+  if (uiState.formFeedback[key]) clearFormFeedback(key);
+  refreshImportFormFeedback(form, key, uiState[draftField]);
+  return true;
+}
+
+function getPersistenceErrorMessage(persistence) {
+  if (!persistence?.lastError) return "";
+  return typeof persistence.lastError === "string"
+    ? persistence.lastError
+    : persistence.lastError.message ?? "";
+}
+
+function getPersistenceMeta(persistence = {}) {
+  if (persistence?.status === "unavailable" || persistence?.mode === "memory_only") {
+    return {
+      label: "Memory-only session",
+      tone: "bad",
+      detail:
+        persistence?.detail ??
+        "Browser persistence is unavailable. Changes will work for this session but may be lost after reload.",
+      showBanner: true
+    };
+  }
+
+  if (persistence?.status === "error") {
+    return {
+      label: "Persistence warning",
+      tone: "warn",
+      detail:
+        persistence?.detail ??
+        "Saved browser-local data could not be loaded. OportuneX continued safely in memory.",
+      showBanner: true
+    };
+  }
+
+  return {
+    label: persistence?.lastSavedAt ? "Local persistence saved" : "Local persistence ready",
+    tone: "good",
+    detail: persistence?.detail ?? "Browser-local persistence is active.",
+    showBanner: false
+  };
+}
+
+function renderPersistenceBanner(persistence) {
+  const meta = getPersistenceMeta(persistence);
+  if (!meta.showBanner) return "";
+  return `
+    <div class="toast ${meta.tone === "warn" ? "warn" : meta.tone === "good" ? "success" : "error"}">
+      <strong>${escapeHtml(meta.label)}</strong>
+      <p>${escapeHtml(meta.detail)}</p>
+      ${getPersistenceErrorMessage(persistence) ? `<small>${escapeHtml(getPersistenceErrorMessage(persistence))}</small>` : ""}
+    </div>
+  `;
+}
+
+function upsertCompanyProfile(draft, importedProfile) {
+  const existingIndex = draft.companyProfiles.findIndex((item) => item.id === importedProfile.id);
+  if (existingIndex >= 0) draft.companyProfiles.splice(existingIndex, 1, importedProfile);
+  else draft.companyProfiles.unshift(importedProfile);
+  draft.activeCompanyId = importedProfile.id;
+}
+
+function upsertOpportunity(draft, importedOpportunity) {
+  const existingIndex = draft.opportunities.findIndex((item) => item.id === importedOpportunity.id);
+  if (existingIndex >= 0) draft.opportunities.splice(existingIndex, 1, importedOpportunity);
+  else draft.opportunities.unshift(importedOpportunity);
 }
 
 function parseOptionalNumber(value) {
@@ -402,9 +587,18 @@ function renderOpportunityScopeTabs(derived) {
 
 function renderOpportunityCardPills(item) {
   const badges = [];
-  if (item.bestMatch) {
+  const fitBand = fitBandOf(item);
+  if (item.decision?.recommendedAction?.label) {
     badges.push(
-      pill(`${item.priorityScore} — ${RECOMMENDATION_COPY[item.recommendationClass] ?? "Not suitable"}`, recommendationTone(item.recommendationClass))
+      pill(item.decision.recommendedAction.label, actionTone(item.decision.recommendedAction.code))
+    );
+  }
+  if (fitBand) {
+    badges.push(
+      pill(
+        `${item.priorityScore} — ${fitBandLabelOf(item)}`,
+        recommendationTone(fitBand)
+      )
     );
   } else {
     badges.push(pill("Not suitable", "bad"));
@@ -425,27 +619,12 @@ function renderOpportunityCardPills(item) {
   return badges.join("");
 }
 
-function decisionActionLabel(match, rejectedReason = null) {
-  if (rejectedReason || ["DO_NOT_PURSUE", "LOW_PRIORITY"].includes(match.recommendationClass)) {
-    return "Do not pursue";
-  }
-  if (match.recommendationClass === "VERIFY_BEFORE_DECIDING") {
-    return match.adaptiveQuestions.length ? "Answer 1 eligibility question first" : "Verify before deciding";
-  }
-  return "Investigate now";
-}
-
-function buildDecisionSummary(match, rejectedReason = null) {
+function buildDecisionSummary(match) {
+  const primaryIssue = primaryOpenIssue(match);
   return {
-    action: decisionActionLabel(match, rejectedReason),
-    reason:
-      rejectedReason ??
-      match.positives[0]?.detail ??
-      match.executiveVerdict,
-    blocker:
-      match.unknowns[0]?.detail ??
-      match.blockers[0]?.detail ??
-      "No blocking question is currently recorded."
+    action: match.decision?.recommendedAction?.label ?? "Review decision",
+    reason: match.decision?.mainReason ?? match.executiveVerdict,
+    blocker: match.decision?.mainQuestion ?? primaryIssue?.detail ?? "No blocking question is currently recorded."
   };
 }
 
@@ -506,7 +685,8 @@ function renderOverview(derived) {
             (item) => `
               <article class="card clickable" data-action="select" data-id="${item.opportunityId}">
                 <div class="card-topline">
-                  ${pill(`${item.priorityScore} — ${RECOMMENDATION_COPY[item.recommendationClass]}`, recommendationTone(item.recommendationClass))}
+                  ${pill(item.decision.recommendedAction.label, actionTone(item.decision.recommendedAction.code))}
+                  ${pill(`${item.priorityScore} — ${fitBandLabelOf(item)}`, recommendationTone(fitBandOf(item)))}
                   ${pill(CONFIDENCE_COPY[item.confidenceShield.label], confidenceTone(item.confidenceShield.label))}
                 </div>
                 <h3>${escapeHtml(item.displayTitle)}</h3>
@@ -668,10 +848,10 @@ function renderFilters() {
         </select>
       </label>
       <label>
-        Recommendation
+        Recommended action
         <select data-filter="recommendation">
           <option value="all" ${uiState.filterRecommendation === "all" ? "selected" : ""}>All</option>
-          ${Object.entries(RECOMMENDATION_COPY)
+          ${Object.entries(ACTION_COPY)
             .map(
               ([value, label]) =>
                 `<option value="${value}" ${uiState.filterRecommendation === value ? "selected" : ""}>${escapeHtml(label)}</option>`
@@ -730,8 +910,8 @@ function renderOpportunityList(derived) {
                           <p class="compact">${escapeHtml(item.displayValueLabel)} · ${escapeHtml(urgencyChip(item.opportunity, derived.now))}</p>
                           <p>${escapeHtml(item.executiveVerdict)}</p>
                           <div class="meta-row">
-                            <span>Why: ${escapeHtml(item.positives[0]?.title ?? item.rejectedReason ?? "Needs deeper review")}</span>
-                            <span>Main question: ${escapeHtml(item.unknowns[0]?.title ?? item.blockers[0]?.title ?? item.rejectedReason ?? "None")}</span>
+                            <span>Why: ${escapeHtml(item.decision?.mainReason ?? item.rejectedReason ?? "Needs deeper review")}</span>
+                            <span>Main question: ${escapeHtml(primaryOpenIssue(item)?.title ?? item.rejectedReason ?? "None")}</span>
                           </div>
                           <div class="card-footer">
                             <span class="card-affordance">View full analysis →</span>
@@ -781,7 +961,8 @@ function renderSavedPage(derived) {
                         <p>${escapeHtml(item.displayValueLabel)} · ${escapeHtml(item.locationLabel)}</p>
                       </div>
                       <div class="meta-actions">
-                        ${pill(RECOMMENDATION_COPY[item.recommendationClass], recommendationTone(item.recommendationClass))}
+                        ${pill(item.decision.recommendedAction.label, actionTone(item.decision.recommendedAction.code))}
+                        ${pill(fitBandLabelOf(item), recommendationTone(fitBandOf(item)))}
                         <button class="ghost-button" data-action="select" data-id="${item.opportunityId}">Open</button>
                       </div>
                     </div>
@@ -1247,7 +1428,7 @@ function renderLabPage(derived) {
         <article class="card">
           <div class="section-heading">
             <h2>Intelligence Lab</h2>
-            <p>Create opportunities manually, paste source text, attach evidence, correct facts and re-run analysis.</p>
+            <p>Create opportunities manually, import structured JSON, attach evidence, correct facts and re-run analysis.</p>
           </div>
           <form data-form="opportunity-import" class="form-grid">
             <label class="full-span">
@@ -1283,8 +1464,30 @@ function renderLabPage(derived) {
             </label>
             <div class="form-actions full-span">
               <button class="button-primary" type="submit">Create / import opportunity</button>
-              <button class="ghost-button" type="button" data-action="reset-demo">Reset demo data</button>
+              <button class="ghost-button" type="button" data-action="reset-demo">Restore demo workspace</button>
               <button class="ghost-button" type="button" data-action="export-json">Export workspace JSON</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="section-heading">
+            <h3>Structured opportunity JSON import</h3>
+            <p>Import a strict opportunity object for the Intelligence Lab. Unsupported keys and blind benchmark metadata are rejected automatically.</p>
+          </div>
+          <form data-form="opportunity-json-import" class="form-grid">
+            <label class="full-span">
+              Structured opportunity JSON
+              <textarea
+                name="opportunityJson"
+                rows="14"
+                placeholder='${escapeHtml(STRUCTURED_OPPORTUNITY_PLACEHOLDER)}'
+              >${escapeHtml(uiState.opportunityJsonDraft)}</textarea>
+            </label>
+            ${renderFormFeedback("opportunityJsonImport", uiState.opportunityJsonDraft)}
+            <p class="form-help full-span">Use supported runtime fields only. Keep ranking, expected, benchmark and answer-key metadata out of imported opportunities.</p>
+            <div class="form-actions full-span">
+              <button class="button-primary" type="submit">Import structured opportunity</button>
             </div>
           </form>
         </article>
@@ -1300,9 +1503,11 @@ function renderLabPage(derived) {
               <textarea
                 name="companyJson"
                 rows="12"
-                placeholder='{"profileMode":"prospect","legalName":"Example SL","facts":{"employeeCountCurrent":{"value":9,"status":"public_reported","referenceYear":2024,"sourceIds":["src-1"]}}}'
-              ></textarea>
+                placeholder='${escapeHtml(COMPANY_IMPORT_PLACEHOLDER)}'
+              >${escapeHtml(uiState.companyImportDraft)}</textarea>
             </label>
+            ${renderFormFeedback("companyImport", uiState.companyImportDraft)}
+            <p class="form-help full-span">Imported profiles activate immediately and remain usable even if browser persistence is temporarily unavailable.</p>
             <div class="form-actions full-span">
               <button class="button-primary" type="submit">Import prospect profile</button>
             </div>
@@ -1472,7 +1677,7 @@ function renderEvaluationPage(derived) {
               <tr>
                 <th>Fixture</th>
                 <th>Status</th>
-                <th>Recommendation</th>
+                <th>Decision</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -1483,7 +1688,7 @@ function renderEvaluationPage(derived) {
                     <tr>
                       <td>${escapeHtml(result.title)}</td>
                       <td>${pill(result.passed ? "Pass" : "Fail", result.passed ? "good" : "bad")}</td>
-                      <td>${escapeHtml(result.recommendationClass ?? result.rejectedReason ?? "n/a")}</td>
+                      <td>${escapeHtml(result.recommendedActionCode ?? result.fitBand ?? result.rejectedReason ?? "n/a")}</td>
                       <td>${escapeHtml(result.checks.filter((check) => !check.pass).map((check) => check.label).join(", ") || "All checks passed")}</td>
                     </tr>
                   `
@@ -1497,21 +1702,23 @@ function renderEvaluationPage(derived) {
   `;
 }
 
-function renderHealthPage(state, runtime, derived) {
+function renderHealthPage(state, runtime, derived, persistence) {
   const footprint = Math.round(JSON.stringify(state).length / 1024);
   const aiStatus = getAiStatusMeta(runtime.ai);
+  const persistenceMeta = getPersistenceMeta(persistence);
   return `
     <section class="page-grid">
-      <div class="card-grid four">
+      <div class="card-grid five">
         ${statCard("Companies", String(state.companyProfiles.length))}
         ${statCard("Analysed", String(derived.portfolio.counts.analysed))}
         ${statCard("Saved", String(state.savedOpportunityIds.length))}
         ${statCard("Local store footprint", `${footprint} KB`)}
+        ${statCard("App phase", runtime.appPhase ?? "n/a")}
       </div>
       <article class="card">
         <div class="section-heading">
           <h2>System health</h2>
-          <p>Phase 0 observability covers workspace counts, source states, AI mode and recent audit events.</p>
+          <p>Phase 0.3.2 observability covers workspace counts, persistence, source states, AI mode and recent audit events.</p>
         </div>
         <div class="health-grid">
           <div>
@@ -1528,6 +1735,17 @@ function renderHealthPage(state, runtime, derived) {
           <div>
             <strong>Connector posture</strong>
             <p>${state.sourceSyncRuns.filter((item) => item.status === "healthy").length} healthy, ${state.sourceSyncRuns.filter((item) => item.status === "planned").length} planned.</p>
+          </div>
+          <div>
+            <strong>Persistence</strong>
+            <p>${escapeHtml(persistenceMeta.detail)}</p>
+            ${
+              persistence?.lastSavedAt
+                ? `<small>Last saved ${escapeHtml(formatDate(persistence.lastSavedAt, { includeTime: true }))}</small>`
+                : getPersistenceErrorMessage(persistence)
+                  ? `<small>${escapeHtml(getPersistenceErrorMessage(persistence))}</small>`
+                  : ""
+            }
           </div>
           <div>
             <strong>Evidence coverage</strong>
@@ -1555,7 +1773,7 @@ function renderOpportunityListMini(matches) {
       (item) => `
         <button class="mini-list-item ${uiState.selectedOpportunityId === item.opportunityId ? "selected" : ""}" data-action="select" data-id="${item.opportunityId}">
           <strong>${escapeHtml(item.displayTitle)}</strong>
-          <span>${escapeHtml(item.recommendationLabel)} · ${item.priorityScore}</span>
+          <span>${escapeHtml(item.fitBandLabel ?? item.recommendationLabel ?? fitBandLabelOf(item))} · ${item.priorityScore}</span>
         </button>
       `
     )
@@ -1583,7 +1801,8 @@ function renderDetailPanel(derived, showDebugger = false) {
     return `<aside class="detail-panel"><article class="card"><p class="empty-state">Select an opportunity to inspect its evidence, scoring and professional report.</p></article></aside>`;
   }
 
-  const decision = buildDecisionSummary(selected, derived.selectedRejected?.reason ?? null);
+  const decision = buildDecisionSummary(selected);
+  const primaryPotentialHardBlocker = selected.potentialHardBlockers?.[0] ?? null;
 
   return `
     <aside class="detail-panel">
@@ -1603,16 +1822,14 @@ function renderDetailPanel(derived, showDebugger = false) {
           </div>
         </div>
         <div class="card-topline">
-          ${pill(RECOMMENDATION_COPY[selected.recommendationClass], recommendationTone(selected.recommendationClass))}
+          ${pill(selected.decision?.recommendedAction?.label ?? "Review decision", actionTone(selected.decision?.recommendedAction?.code))}
+          ${pill(fitBandLabelOf(selected), recommendationTone(fitBandOf(selected)))}
           ${pill(ELIGIBILITY_COPY[selected.eligibilityStatus], eligibilityTone(selected.eligibilityStatus))}
         </div>
         <h3>${escapeHtml(selected.displayTitle)}</h3>
         <p>${escapeHtml(selected.executiveVerdict)}</p>
-        ${
-          derived.selectedRejected?.reason
-            ? `<div class="detail-alert"><strong>Current outcome:</strong> ${escapeHtml(derived.selectedRejected.reason)}</div>`
-            : ""
-        }
+        ${selected.decision?.recommendedAction?.code === "DO_NOT_PURSUE" ? `<div class="detail-alert"><strong>Current outcome:</strong> ${escapeHtml(selected.decision.mainReason)}</div>` : ""}
+        ${primaryPotentialHardBlocker ? `<div class="detail-alert"><strong>Potential hard blocker:</strong> ${escapeHtml(primaryPotentialHardBlocker.title)}. ${escapeHtml(primaryPotentialHardBlocker.detail)}</div>` : ""}
         <div class="detail-stats">
           ${statCard("Match", `${selected.matchScore}/100`)}
           ${statCard("Priority", `${selected.priorityScore}/100`)}
@@ -1644,11 +1861,19 @@ function renderDetailPanel(derived, showDebugger = false) {
 
 function renderReportTab(opportunity, match) {
   const eligibilityRequirements = match.requirementRows.filter((row) => row.mandatory).map((row) => row.label);
-  const preparationItems = [
-    "Internal go / no-go review",
-    "Commercial and technical lead assignment",
-    match.unknowns.length ? "Gather evidence for unresolved qualification or eligibility conditions" : null
-  ].filter(Boolean);
+  const nonActionable = isNonActionableDerivedStatus(opportunity.derivedStatus ?? opportunity.status);
+  const preparationItems = nonActionable
+    ? ["Archival review only. This notice is not open for a live submission."]
+    : [
+        "Internal go / no-go review",
+        "Commercial and technical lead assignment",
+        match.potentialHardBlockers?.length || match.unknowns.length
+          ? "Gather evidence for unresolved qualification or eligibility conditions"
+          : null
+      ].filter(Boolean);
+  const guaranteeLabel = describeEvidenceBackedText(opportunity, "guarantees", opportunity.guarantees, {
+    fallback: "Not stated"
+  });
 
   return `
     <div class="detail-section">
@@ -1690,9 +1915,10 @@ function renderReportTab(opportunity, match) {
               )
               .join("")
           : "<li>No reliable financial amount is currently available.</li>"}
-        <li>Potential company amount: ${escapeHtml(match.companyAmountLabel)}</li>
+        <li>${escapeHtml(match.companyAmountLabel)}</li>
+        <li>Recommended action: ${escapeHtml(match.decision?.recommendedAction?.label ?? "Review decision")}</li>
         <li>Duration: ${escapeHtml(opportunity.duration ?? "Not stated")}</li>
-        <li>Guarantees: ${escapeHtml(opportunity.guarantees ?? "Not stated")}</li>
+        <li>Guarantees: ${escapeHtml(guaranteeLabel)}</li>
         <li>Scale fit note: ${escapeHtml(match.dimensions?.scaleAssessment?.note ?? "No scale note recorded.")}</li>
       </ul>
     </div>
@@ -1723,16 +1949,36 @@ function renderReportTab(opportunity, match) {
       <ul class="tight-list">
         ${match.blockers.length
           ? match.blockers.map((item) => `<li>${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")
-          : `<li>No confirmed blocker recorded.</li>`}
+          : `<li>${escapeHtml(
+              (match.potentialHardBlockers ?? []).length
+                ? "No confirmed blocker recorded, but potential hard blockers remain."
+                : "No confirmed blocker recorded."
+            )}</li>`}
+        ${(match.potentialHardBlockers ?? []).map((item) => `<li><strong>Potential hard blocker:</strong> ${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
         ${match.unknowns.map((item) => `<li>${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
+        ${match.risks.map((item) => `<li>${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
       </ul>
     </div>
     <div class="detail-section">
       <h4>How to pursue</h4>
       <ul class="tight-list">
-        <li><a href="${escapeHtml(opportunity.applicationUrl ?? "#")}" target="_blank" rel="noreferrer noopener">Open official application</a></li>
-        <li><a href="${escapeHtml(opportunity.noticeUrl ?? "#")}" target="_blank" rel="noreferrer noopener">Open official notice</a></li>
-        <li>Authority contact: ${escapeHtml(match.primaryContact?.name ?? "Not published")}</li>
+        ${
+          nonActionable
+            ? `<li>No live submission route applies because this notice is not open.</li>`
+            : opportunity.applicationUrl
+            ? `<li><a href="${escapeHtml(opportunity.applicationUrl)}" target="_blank" rel="noreferrer noopener">Open official application</a></li>`
+            : `<li>Submission route not yet verified</li>`
+        }
+        ${
+          opportunity.noticeUrl
+            ? `<li><a href="${escapeHtml(opportunity.noticeUrl)}" target="_blank" rel="noreferrer noopener">Open official notice</a></li>`
+            : `<li>Official notice / dossier not yet verified</li>`
+        }
+        <li>Authority contact: ${escapeHtml(
+          nonActionable && !match.primaryContact?.name
+            ? "No live submission contact is required for this archived notice."
+            : match.primaryContact?.name ?? "Contact not found in reviewed/imported sources"
+        )}</li>
         <li>Reference: ${escapeHtml(opportunity.referenceNumber ?? opportunity.id)}</li>
         <li>Deadline: ${escapeHtml(formatDeadline(opportunity.deadline))}</li>
       </ul>
@@ -1752,13 +1998,17 @@ function renderEvidenceTab(opportunity, match) {
         ${pill(CONFIDENCE_COPY[match.confidenceShield.label], confidenceTone(match.confidenceShield.label))}
         <ul class="tight-list">
           <li>Source evidence: ${match.confidenceShield.sourceFieldsEvidenced}/${match.confidenceShield.totalSourceFields} source fields evidenced</li>
+          <li>Critical field summary: ${escapeHtml(match.confidenceShield.criticalFieldSummary)}</li>
           <li>Mandatory eligibility: ${match.confidenceShield.mandatoryConfirmed} confirmed, ${match.confidenceShield.mandatoryNeedsVerification} need verification, ${match.confidenceShield.mandatoryFailed} failed</li>
           <li>Company confirmation: ${match.confidenceShield.companyConfirmationsNeeded} answers needed</li>
           <li>Data confidence: ${escapeHtml(match.confidenceShield.dataConfidence)}</li>
           <li>Eligibility confidence: ${escapeHtml(match.confidenceShield.eligibilityConfidence)}</li>
+          <li>Company-fact confidence: ${escapeHtml(match.confidenceShield.companyFactConfidence)}</li>
+          <li>Decision confidence: ${escapeHtml(match.confidenceShield.decisionConfidence)}</li>
           <li>Source conflicts: ${match.confidenceShield.sourceConflictsCount === 0 ? "None" : String(match.confidenceShield.sourceConflictsCount)}</li>
           <li>Official source verified: ${match.confidenceShield.officialSourceVerified ? "Yes" : "No"}</li>
           <li>Last checked: ${escapeHtml(formatLastChecked(opportunity.lastChecked))}</li>
+          <li>Recommended action: ${escapeHtml(match.decision?.recommendedAction?.label ?? "Review decision")}</li>
         </ul>
       </div>
     </div>
@@ -1848,9 +2098,18 @@ function renderDebugTab(opportunity, match) {
   `;
 }
 
-function layout(content, state, runtime, derived) {
+function layout(content, runtime, derived, persistence) {
   const aiStatus = getAiStatusMeta(runtime.ai);
   const profileMode = getProfileMode(derived.company);
+  const persistenceMeta = getPersistenceMeta(persistence);
+  const messageToneClass =
+    uiState.messageTone === "error"
+      ? "error"
+      : uiState.messageTone === "warn"
+        ? "warn"
+        : uiState.messageTone === "success"
+          ? "success"
+          : "";
   return `
     <div class="app-shell">
       ${renderNavigation(uiState.route)}
@@ -1862,12 +2121,15 @@ function layout(content, state, runtime, derived) {
           </div>
           <div class="topbar-actions">
             ${pill(aiStatus.shortLabel, aiStatus.tone)}
+            ${pill(runtime.appPhase ?? "phase-unknown", "neutral")}
+            ${pill(persistenceMeta.label, persistenceMeta.tone)}
             ${pill(profileMode === "prospect" ? "Prospect profile" : "Confirmed company", "neutral")}
             ${pill(`${derived.portfolio.counts.analysed} analysed`, "neutral")}
             ${pill(`${derived.portfolio.counts.worthAttention} worth attention`, "neutral")}
           </div>
         </header>
-        ${uiState.message ? `<div class="toast ${uiState.messageTone === "error" ? "error" : ""}">${escapeHtml(uiState.message)}</div>` : ""}
+        ${uiState.message ? `<div class="toast ${messageToneClass}">${escapeHtml(uiState.message)}</div>` : ""}
+        ${renderPersistenceBanner(persistence)}
         ${renderProfileModeBanner(derived.company)}
         ${content}
       </main>
@@ -1875,7 +2137,7 @@ function layout(content, state, runtime, derived) {
   `;
 }
 
-function renderRoute(route, state, runtime, derived) {
+function renderRoute(route, state, runtime, derived, persistence) {
   switch (route) {
     case "opportunities":
       return renderOpportunityList(derived);
@@ -1892,7 +2154,7 @@ function renderRoute(route, state, runtime, derived) {
     case "evaluation":
       return renderEvaluationPage(derived);
     case "health":
-      return renderHealthPage(state, runtime, derived);
+      return renderHealthPage(state, runtime, derived, persistence);
     default:
       return renderOverview(derived);
   }
@@ -1956,9 +2218,10 @@ export function startApp(root, { runtime, store }) {
 
   function render() {
     const state = store.getState();
+    const persistence = store.getPersistenceStatus();
     const derived = getDerived(state, runtime);
-    const content = renderRoute(uiState.route, state, runtime, derived);
-    root.innerHTML = layout(content, state, runtime, derived);
+    const content = renderRoute(uiState.route, state, runtime, derived, persistence);
+    root.innerHTML = layout(content, runtime, derived, persistence);
   }
 
   root.addEventListener("click", async (event) => {
@@ -2030,7 +2293,9 @@ export function startApp(root, { runtime, store }) {
 
     if (action === "reset-demo") {
       store.reset();
-      setMessage("Demo workspace reset.");
+      clearFormFeedback("companyImport");
+      clearFormFeedback("opportunityJsonImport");
+      setMessage("Demo workspace restored.");
       render();
       return;
     }
@@ -2102,7 +2367,21 @@ export function startApp(root, { runtime, store }) {
     }
   });
 
+  root.addEventListener("input", (event) => {
+    const target = event.target;
+    const form = target?.closest?.("form[data-form='company-import'], form[data-form='opportunity-json-import']");
+    if (!form) return;
+    syncImportDraftFromInput(form, target);
+  });
+
   root.addEventListener("keydown", (event) => {
+    const importForm = event.target.closest?.("form[data-form='company-import'], form[data-form='opportunity-json-import']");
+    if (importForm && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (typeof importForm.requestSubmit === "function") importForm.requestSubmit();
+      return;
+    }
+
     const card = event.target.closest(".opportunity-card[data-action='select']");
     if (!card || event.target !== card) return;
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -2115,6 +2394,7 @@ export function startApp(root, { runtime, store }) {
 
   root.addEventListener("change", (event) => {
     const element = event.target;
+    if (!element?.dataset?.filter) return;
     if (element.dataset.filter === "type") uiState.filterType = element.value;
     if (element.dataset.filter === "recommendation") uiState.filterRecommendation = element.value;
     if (element.dataset.filter === "sort") uiState.sort = element.value;
@@ -2210,24 +2490,45 @@ export function startApp(root, { runtime, store }) {
 
     if (form.dataset.form === "company-import") {
       const jsonText = formData.get("companyJson")?.toString() ?? "";
+      uiState.companyImportDraft = jsonText;
+      clearFormFeedback("companyImport");
+      if (!jsonText.trim()) {
+        const message = "Paste structured company JSON here before importing.";
+        setFormFeedback("companyImport", message, "error");
+        setMessage(message, "error");
+        refreshImportFormFeedback(form, "companyImport", uiState.companyImportDraft);
+        render();
+        return;
+      }
       let importedProfile;
       try {
         importedProfile = importCompanyProfileFromJson(jsonText);
       } catch (error) {
-        setMessage(error.message, "error");
+        const message = error instanceof Error ? error.message : String(error);
+        setFormFeedback("companyImport", message, "error");
+        setMessage(message, "error");
+        refreshImportFormFeedback(form, "companyImport", uiState.companyImportDraft);
         render();
         return;
       }
 
       store.update((draft) => {
-        const existingIndex = draft.companyProfiles.findIndex((item) => item.id === importedProfile.id);
-        if (existingIndex >= 0) draft.companyProfiles.splice(existingIndex, 1, importedProfile);
-        else draft.companyProfiles.unshift(importedProfile);
-        draft.activeCompanyId = importedProfile.id;
+        upsertCompanyProfile(draft, importedProfile);
       }, makeAudit("Prospect profile imported", `Imported ${importedProfile.legalName}.`));
       uiState.route = "company";
-      setMessage(`Prospect profile imported for ${importedProfile.legalName}.`);
+      const persistenceStatus = store.getPersistenceStatus();
+      const messageTone = persistenceStatus.status === "available" ? "success" : "warn";
+      setFormFeedback(
+        "companyImport",
+        persistenceStatus.status === "available"
+          ? `Prospect profile imported for ${importedProfile.legalName}.`
+          : `Prospect profile imported for ${importedProfile.legalName}. Browser persistence is unavailable. Changes will work for this session but may be lost after reload.`,
+        messageTone
+      );
+      uiState.companyImportDraft = "";
+      setMessage(`Prospect profile imported for ${importedProfile.legalName}.`, messageTone);
       form.reset();
+      refreshImportFormFeedback(form, "companyImport", uiState.companyImportDraft);
       render();
       return;
     }
@@ -2264,8 +2565,18 @@ export function startApp(root, { runtime, store }) {
 
       if (manualTitle) imported.title = manualTitle;
       imported.type = type;
+      imported.noticeType = type === "grant" ? "grant_call" : "active_contract_notice";
+      if (type === "grant") {
+        imported.relevantValue = null;
+        imported.estimatedValue = null;
+        imported.lots = [];
+      } else {
+        imported.maximumAidPerBeneficiary = null;
+      }
       if (manualValue) {
-        if (type === "grant") imported.maximumAidPerBeneficiary = manualValue;
+        if (type === "grant") {
+          imported.maximumAidPerBeneficiary = manualValue;
+        }
         else {
           imported.relevantValue = manualValue;
           imported.estimatedValue = manualValue;
@@ -2293,10 +2604,58 @@ export function startApp(root, { runtime, store }) {
       store.update((draft) => {
         draft.opportunities.unshift(imported);
       }, makeAudit("Opportunity imported", `Created ${imported.title}.`));
+      uiState.opportunityScope = "all_analysed";
       uiState.selectedOpportunityId = imported.id;
       uiState.detailTab = "report";
-      setMessage("Opportunity imported into the Intelligence Lab.");
+      setMessage("Opportunity imported into the Intelligence Lab.", "success");
       form.reset();
+      render();
+      return;
+    }
+
+    if (form.dataset.form === "opportunity-json-import") {
+      const jsonText = formData.get("opportunityJson")?.toString() ?? "";
+      uiState.opportunityJsonDraft = jsonText;
+      clearFormFeedback("opportunityJsonImport");
+      if (!jsonText.trim()) {
+        const message = "Paste structured opportunity JSON here before importing.";
+        setFormFeedback("opportunityJsonImport", message, "error");
+        setMessage(message, "error");
+        refreshImportFormFeedback(form, "opportunityJsonImport", uiState.opportunityJsonDraft);
+        render();
+        return;
+      }
+      let importedOpportunity;
+      try {
+        importedOpportunity = importOpportunityFromJson(jsonText);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setFormFeedback("opportunityJsonImport", message, "error");
+        setMessage(message, "error");
+        refreshImportFormFeedback(form, "opportunityJsonImport", uiState.opportunityJsonDraft);
+        render();
+        return;
+      }
+
+      store.update((draft) => {
+        upsertOpportunity(draft, importedOpportunity);
+      }, makeAudit("Structured opportunity imported", `Imported ${importedOpportunity.title}.`));
+      uiState.opportunityScope = "all_analysed";
+      uiState.selectedOpportunityId = importedOpportunity.id;
+      uiState.detailTab = "report";
+      const persistenceStatus = store.getPersistenceStatus();
+      const messageTone = persistenceStatus.status === "available" ? "success" : "warn";
+      setFormFeedback(
+        "opportunityJsonImport",
+        persistenceStatus.status === "available"
+          ? `Structured opportunity imported: ${importedOpportunity.title}.`
+          : `Structured opportunity imported: ${importedOpportunity.title}. Browser persistence is unavailable. Changes will work for this session but may be lost after reload.`,
+        messageTone
+      );
+      uiState.opportunityJsonDraft = "";
+      setMessage(`Structured opportunity imported: ${importedOpportunity.title}.`, messageTone);
+      form.reset();
+      refreshImportFormFeedback(form, "opportunityJsonImport", uiState.opportunityJsonDraft);
       render();
       return;
     }

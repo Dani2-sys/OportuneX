@@ -1,6 +1,6 @@
 window.OPORTUNEX_RUNTIME = {
   appName: "OportuneX",
-  appPhase: "phase-0.3",
+  appPhase: "phase-0.3.2",
   ai: {
     provider: "mock",
     status: "mock",

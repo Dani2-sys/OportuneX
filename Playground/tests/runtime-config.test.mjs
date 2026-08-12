@@ -7,7 +7,8 @@ import path from "node:path";
 import {
   buildOpenAiVerificationRequest,
   buildVerificationPrompt,
-  classifyOpenAi429
+  classifyOpenAi429,
+  validateVerificationResult
 } from "../scripts/openai-verification.mjs";
 import {
   createRuntimeConfig,
@@ -79,6 +80,16 @@ test("AI verifier request uses configured server-side model and strict structure
   assert.equal(requestBody.reasoning.effort, "medium");
   assert.equal(requestBody.text.format.type, "json_schema");
   assert.equal(requestBody.text.format.strict, true);
+  assert.ok("corrected_action" in requestBody.text.format.schema.properties);
+  assert.ok("corrected_fit_band" in requestBody.text.format.schema.properties);
+  assert.deepEqual(
+    requestBody.text.format.schema.properties.corrected_fit_band.anyOf[0].enum,
+    ["EXCELLENT_FIT", "STRONG_FIT", "POSSIBLE_FIT", "LOW_PRIORITY", "DO_NOT_PURSUE"]
+  );
+  assert.doesNotMatch(
+    JSON.stringify(requestBody.text.format.schema.properties.corrected_fit_band.anyOf[0].enum),
+    /VERIFY_BEFORE_DECIDING/
+  );
 });
 
 test("verification prompt is framed as an independent second-pass layer", () => {
@@ -90,6 +101,24 @@ test("verification prompt is framed as an independent second-pass layer", () => 
 
   assert.match(prompt, /independent second-pass verification layer/i);
   assert.doesNotMatch(prompt, /deterministic second-pass verification layer/i);
+  assert.match(prompt, /amountMinor uses currency minor units/i);
+  assert.match(prompt, /publication date or publication timestamp is not a submission deadline/i);
+  assert.match(prompt, /missing recorded evidence|absence of recorded evidence/i);
+  assert.match(prompt, /VERIFY_BEFORE_DECIDING is an action, not a fit band/i);
+});
+
+test("AI verifier rejects action vocabulary in corrected_fit_band", () => {
+  const error = validateVerificationResult({
+    review_status: "needs_review",
+    warnings: [],
+    disagreements: [],
+    corrected_action: "VERIFY_BEFORE_DECIDING",
+    corrected_fit_band: "VERIFY_BEFORE_DECIDING",
+    confidence: "medium",
+    notes: "Cross-enum validation should reject action vocabulary in fit-band fields."
+  });
+
+  assert.equal(error, "corrected_fit_band must use canonical fit-band values, not action values.");
 });
 
 test("429 classification distinguishes quota exhaustion from rate limiting", () => {

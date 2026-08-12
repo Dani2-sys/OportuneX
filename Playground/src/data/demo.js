@@ -669,7 +669,7 @@ export const demoOpportunities = [
     issuingOrganisation: "Ajuntament de Tortosa",
     contractingAuthority: "Ajuntament de Tortosa",
     publicationDate: "2026-08-06",
-    deadline: parseSpanishDate("06/08/2026 11:00"),
+    deadline: null,
     location: {
       municipality: "Tortosa",
       province: "Tarragona",
@@ -677,14 +677,15 @@ export const demoOpportunities = [
       display: "Tortosa"
     },
     cpvCodes: ["09331200"],
-    estimatedValue: createMoney({ major: 300000, amountType: "award_value", vatStatus: "excluding" }),
-    relevantValue: createMoney({ major: 300000, amountType: "award_value", vatStatus: "excluding" }),
+    awardValue: createMoney({ major: 300000, amountType: "award_value", vatStatus: "excluding" }),
     lastChecked: "2026-08-07T08:10:00+02:00",
     contacts: [],
     sources: [source("source-award", "Ajuntament de Tortosa", "Award notice", "https://official.oportunex.local/award", "2026-08-06", "2026-08-07T08:10:00+02:00")],
     evidence: [
       evidence("ev-award-status", "status", "Award notice published after contract award", "source-award"),
-      evidence("ev-award-deadline", "deadline", "Publication date 06/08/2026 11:00", "source-award"),
+      evidence("ev-award-publication", "publication_date", "Publication date 06/08/2026 11:00", "source-award"),
+      evidence("ev-award-value", "lot_value", "Awarded contract value: 300,000 EUR", "source-award"),
+      evidence("ev-award-location", "location", "Execution place: Tortosa", "source-award"),
       evidence("ev-award-notice", "official_notice", "Award notice", "source-award")
     ],
     requirements: [],

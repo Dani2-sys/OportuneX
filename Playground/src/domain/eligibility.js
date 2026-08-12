@@ -1,13 +1,17 @@
 import { currentYmd } from "./deadline.js";
 import { bandToRange } from "./money.js";
 import {
+  assessFactCurrentness,
+  factCanConfirmCurrentEligibility,
   factCanConfirmEligibility,
   getCompanyCertifications,
   getCompanyFact,
   getCompanyInsurancePolicies,
   getCompanyRepresentativeProjects,
+  getEmployeeRange,
   getFactValue,
   getTurnoverRange,
+  rangeCanConfirmCurrentEligibility,
   rangeCanConfirmEligibility
 } from "./company-profile.js";
 import { normalizeText } from "../utils.js";
@@ -63,6 +67,24 @@ function comparableSignals(requirement, subject, { publicOnlyDefault = false, co
           : []
     )
   };
+}
+
+function currentYear(now) {
+  return Number(currentYmd(now).slice(0, 4));
+}
+
+function formatHistoricalPrefix(fact, now) {
+  const currentness = assessFactCurrentness(fact, now);
+  if (fact?.referenceYear != null) return `Historical ${fact.referenceYear} evidence`;
+  if (fact?.asOfDate) return `Historical evidence from ${fact.asOfDate}`;
+  if (currentness.basis === "undated") return "Undated evidence";
+  return "Historical evidence";
+}
+
+function buildCurrentEvidenceQuestion(label, signalMessage = "") {
+  return signalMessage
+    ? `${signalMessage} Please confirm the current ${label.toLowerCase()}.`
+    : `Please confirm the current ${label.toLowerCase()}.`;
 }
 
 function projectEvidenceCanConfirm(project) {
@@ -135,8 +157,7 @@ function projectLookbackStatus(project, lookbackYears, now) {
   const completionYear = Number(project.completionYear ?? NaN);
   if (!Number.isFinite(completionYear)) return "needs_verification";
 
-  const currentYear = Number(currentYmd(now).slice(0, 4));
-  const thresholdYear = currentYear - lookbackYears;
+  const thresholdYear = currentYear(now) - lookbackYears;
   if (completionYear > thresholdYear) return "confirmed";
   if (completionYear < thresholdYear) return "failed";
   return "needs_verification";
@@ -196,17 +217,27 @@ function compareCertification(company, requirement, now) {
   );
   if (!found) return asComparison("needs_verification");
   const availability = certificationValue(found);
-  if (availability === "valid" && factCanConfirmEligibility(found.currentStatus, now)) return asComparison("confirmed");
-  if ((availability === "missing" || availability === "expired") && factCanConfirmEligibility(found.currentStatus, now)) {
+  if (availability === "valid" && factCanConfirmCurrentEligibility(found.currentStatus, now)) return asComparison("confirmed");
+  if ((availability === "missing" || availability === "expired") && factCanConfirmCurrentEligibility(found.currentStatus, now)) {
     return asComparison("failed");
+  }
+  if (availability === "valid" || availability === "missing" || availability === "expired") {
+    const prefix = formatHistoricalPrefix(found.currentStatus, now);
+    return asComparison("needs_verification", {
+      signalDirection: availability === "valid" ? "positive" : "negative",
+      signalDetail: `${prefix} indicates certificate status "${availability}".`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} indicates certificate status "${availability}".`
+      ),
+      currentEvidenceRequired: true
+    });
   }
   return asComparison("needs_verification");
 }
 
 function compareExperience(company, subject, requirement, now) {
-  const comparableScopeRequired =
-    requirement.comparableScopeRequired ??
-    true;
+  const comparableScopeRequired = requirement.comparableScopeRequired ?? true;
 
   if (
     comparableScopeRequired === false &&
@@ -233,13 +264,102 @@ function compareExperience(company, subject, requirement, now) {
 function compareTurnover(company, requirement, now) {
   const turnoverRange = getTurnoverRange(company);
   const minimum = requirement.minimumAmount ?? bandToRange(requirement.minimumTurnoverBand ?? "under-250k")[0];
+  if (minimum == null) return asComparison("needs_verification");
+  if (rangeCanConfirmCurrentEligibility(turnoverRange, now)) {
+    if (turnoverRange.min != null && turnoverRange.min >= minimum) return asComparison("confirmed");
+    if (turnoverRange.max == null) return asComparison("needs_verification");
+    if (turnoverRange.max < minimum) return asComparison("failed");
+    if (turnoverRange.min == null) return asComparison("needs_verification");
+    if (turnoverRange.min < minimum && turnoverRange.max >= minimum) return asComparison("needs_verification");
+    return asComparison("failed");
+  }
+
   if (!rangeCanConfirmEligibility(turnoverRange, now)) return asComparison("needs_verification");
-  if (turnoverRange.min != null && turnoverRange.min >= minimum) return asComparison("confirmed");
-  if (turnoverRange.max == null) return asComparison("needs_verification");
-  if (turnoverRange.max < minimum) return asComparison("failed");
-  if (turnoverRange.min == null) return asComparison("needs_verification");
-  if (turnoverRange.min < minimum && turnoverRange.max >= minimum) return asComparison("needs_verification");
-  return asComparison("failed");
+
+  const prefix = formatHistoricalPrefix(turnoverRange, now);
+  if (turnoverRange.max != null && turnoverRange.max < minimum) {
+    return asComparison("needs_verification", {
+      signalDirection: "negative",
+      signalDetail: `${prefix} suggests turnover below the required threshold.`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} suggests turnover below the required threshold.`
+      ),
+      currentEvidenceRequired: true
+    });
+  }
+  if (turnoverRange.min != null && turnoverRange.min >= minimum) {
+    return asComparison("needs_verification", {
+      signalDirection: "positive",
+      signalDetail: `${prefix} suggests turnover above the required threshold.`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} suggests turnover above the required threshold.`
+      ),
+      currentEvidenceRequired: true
+    });
+  }
+  return asComparison("needs_verification");
+}
+
+function compareEmployeeCount(company, requirement, now) {
+  const employeeFact = getCompanyFact(company, "employeeCountCurrent");
+  const exactValue = getFactValue(employeeFact);
+  const range = getEmployeeRange(company);
+  const minimum = requirement.minimumCount ?? requirement.requiredValue ?? null;
+  if (!Number.isFinite(minimum)) return asComparison("needs_verification");
+
+  if (exactValue != null && factCanConfirmCurrentEligibility(employeeFact, now)) {
+    return asComparison(exactValue >= minimum ? "confirmed" : "failed");
+  }
+
+  if (rangeCanConfirmCurrentEligibility(range, now)) {
+    if (range.min != null && range.min >= minimum) return asComparison("confirmed");
+    if (range.max != null && range.max < minimum) return asComparison("failed");
+    return asComparison("needs_verification");
+  }
+
+  const sourceFact = exactValue != null ? employeeFact : range;
+  if (!factCanConfirmEligibility(sourceFact, now) && exactValue == null) return asComparison("needs_verification");
+
+  const prefix = formatHistoricalPrefix(sourceFact, now);
+  if (exactValue != null) {
+    return asComparison("needs_verification", {
+      signalDirection: exactValue < minimum ? "negative" : "positive",
+      signalDetail: `${prefix} shows ${exactValue} employees.`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} shows ${exactValue} employees.`
+      ),
+      currentEvidenceRequired: true
+    });
+  }
+
+  if (range.max != null && range.max < minimum) {
+    return asComparison("needs_verification", {
+      signalDirection: "negative",
+      signalDetail: `${prefix} suggests the employee count is below the required threshold.`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} suggests the employee count is below the required threshold.`
+      ),
+      currentEvidenceRequired: true
+    });
+  }
+
+  if (range.min != null && range.min >= minimum) {
+    return asComparison("needs_verification", {
+      signalDirection: "positive",
+      signalDetail: `${prefix} suggests the employee count is above the required threshold.`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} suggests the employee count is above the required threshold.`
+      ),
+      currentEvidenceRequired: true
+    });
+  }
+
+  return asComparison("needs_verification");
 }
 
 function compareRegion(company, requirement, opportunity) {
@@ -248,7 +368,7 @@ function compareRegion(company, requirement, opportunity) {
   const excluded = (company.geography?.excludedRegions ?? []).map(normalizeText);
   if (excluded.includes(region)) return asComparison("failed");
   const accepted = (requirement.allowedRegions ?? company.geography?.acceptedRegions ?? []).map(normalizeText);
-  if (!accepted.length) return asComparison("confirmed");
+  if (!accepted.length) return asComparison("needs_verification");
   return asComparison(accepted.includes(region) ? "confirmed" : "failed");
 }
 
@@ -298,10 +418,25 @@ function compareInsurance(company, requirement, now) {
   );
   if (!insurance) return asComparison("needs_verification");
   const cover = getFactValue(insurance.coverAmountFact);
-  if (cover == null || !factCanConfirmEligibility(insurance.coverAmountFact, now)) {
-    return asComparison("needs_verification");
+  if (cover == null) return asComparison("needs_verification");
+  if (factCanConfirmCurrentEligibility(insurance.coverAmountFact, now)) {
+    return asComparison(cover >= (requirement.minimumAmount ?? 0) ? "confirmed" : "failed");
   }
-  return asComparison(cover >= (requirement.minimumAmount ?? 0) ? "confirmed" : "failed");
+
+  if (factCanConfirmEligibility(insurance.coverAmountFact, now)) {
+    const prefix = formatHistoricalPrefix(insurance.coverAmountFact, now);
+    return asComparison("needs_verification", {
+      signalDirection: cover >= (requirement.minimumAmount ?? 0) ? "positive" : "negative",
+      signalDetail: `${prefix} records insurance cover of ${cover}.`,
+      question: buildCurrentEvidenceQuestion(
+        requirement.label,
+        `${prefix} records insurance cover of ${cover}.`
+      ),
+      currentEvidenceRequired: true
+    });
+  }
+
+  return asComparison("needs_verification");
 }
 
 function compareComparableExperience(company, subject, requirement, now, options = {}) {
@@ -379,6 +514,8 @@ function defaultWhy(requirement) {
       return "This answer determines whether there is evidence of a comparable project portfolio for the required scope.";
     case "turnover":
       return "This answer determines whether the minimum turnover threshold can be met.";
+    case "employee_count":
+      return "This answer determines whether the current employee-count threshold can be met.";
     case "beneficiary":
       return "This answer determines whether the company fits the eligible beneficiary type.";
     case "co_finance":
@@ -400,6 +537,18 @@ function requirementSeverity(status, requirement) {
   if (status === "needs_verification" && requirement.mandatory && requirement.gating === "hard") return "high";
   if (status === "needs_verification" && requirement.mandatory) return "medium";
   return "low";
+}
+
+function questionPriority(requirement, comparison, mandatory) {
+  if (comparison.status !== "needs_verification") return 0;
+  let score = comparison.questionPriority ?? 0;
+  if (mandatory && requirement.gating === "hard") score += 150;
+  else if (mandatory) score += 90;
+  if (comparison.signalDirection === "negative") score += 55;
+  else if (comparison.signalDirection === "positive") score += 25;
+  if (comparison.currentEvidenceRequired) score += 25;
+  if (requirement.kind === "employee_count" || requirement.kind === "turnover") score += 15;
+  return score;
 }
 
 export function evaluateRequirement(company, opportunity, requirement, lot = null, now = new Date()) {
@@ -429,6 +578,9 @@ export function evaluateRequirement(company, opportunity, requirement, lot = nul
       break;
     case "turnover":
       comparison = compareTurnover(company, requirement, now);
+      break;
+    case "employee_count":
+      comparison = compareEmployeeCount(company, requirement, now);
       break;
     case "region":
       comparison = compareRegion(company, requirement, opportunity);
@@ -466,7 +618,11 @@ export function evaluateRequirement(company, opportunity, requirement, lot = nul
     question: comparison.question ?? requirement.question,
     failureReason: comparison.failureReason ?? requirement.failureReason,
     evidenceIds: requirement.evidenceIds ?? [],
-    severity
+    severity,
+    signalDirection: comparison.signalDirection ?? null,
+    signalDetail: comparison.signalDetail ?? "",
+    currentEvidenceRequired: comparison.currentEvidenceRequired ?? false,
+    questionPriority: questionPriority(requirement, comparison, mandatory)
   };
 }
 
@@ -476,14 +632,17 @@ export function evaluateEligibility(company, opportunity, lot, now = new Date())
 
   const mandatoryRows = rows.filter((row) => row.mandatory);
   const failedMandatory = mandatoryRows.filter((row) => row.status === "failed");
-  const unknownMandatory = mandatoryRows.filter((row) => row.status === "needs_verification");
+  const unknownMandatory = mandatoryRows
+    .filter((row) => row.status === "needs_verification")
+    .sort((left, right) => right.questionPriority - left.questionPriority || left.label.localeCompare(right.label));
   const confirmedMandatory = mandatoryRows.filter((row) => row.status === "confirmed");
   const hardMandatoryFailed = mandatoryRows.filter((row) => row.gating === "hard" && row.status === "failed");
   const hardMandatoryNeedsVerification = mandatoryRows.filter(
     (row) => row.gating === "hard" && row.status === "needs_verification"
   );
+  const ordinaryUnknownMandatory = unknownMandatory.filter((row) => !(row.gating === "hard"));
 
-  let eligibilityStatus = "LIKELY_ELIGIBLE";
+  let eligibilityStatus = "ELIGIBILITY_NOT_ASSESSED";
   if (failedMandatory.length) eligibilityStatus = "INELIGIBLE";
   else if (unknownMandatory.length) eligibilityStatus = "ELIGIBILITY_UNCLEAR";
   else if (mandatoryRows.length > 0 && confirmedMandatory.length === mandatoryRows.length) {
@@ -495,16 +654,30 @@ export function evaluateEligibility(company, opportunity, lot, now = new Date())
     detail: row.failureReason ?? "Mandatory requirement fails based on available company data.",
     severity: row.severity
   }));
-  const unknowns = unknownMandatory.map((row) => ({
+  const potentialHardBlockers = hardMandatoryNeedsVerification.map((row) => ({
     title: row.label,
-    detail: row.question ?? "Requirement exists but company evidence is missing.",
-    severity: row.severity
+    detail:
+      row.signalDetail && row.question
+        ? `${row.signalDetail} ${row.question}`
+        : row.question ?? "Hard-gating requirement exists but company evidence is still missing.",
+    severity: row.severity,
+    priority: row.questionPriority
+  }));
+  const unknowns = ordinaryUnknownMandatory.map((row) => ({
+    title: row.label,
+    detail:
+      row.signalDetail && row.question
+        ? `${row.signalDetail} ${row.question}`
+        : row.question ?? "Requirement exists but company evidence is missing.",
+    severity: row.severity,
+    priority: row.questionPriority
   }));
 
   return {
     eligibilityStatus,
     requirementRows: rows,
     blockers,
+    potentialHardBlockers,
     unknowns,
     summary: {
       mandatoryConfirmed: confirmedMandatory.length,
@@ -513,6 +686,7 @@ export function evaluateEligibility(company, opportunity, lot, now = new Date())
       hardMandatoryConfirmed: mandatoryRows.filter((row) => row.gating === "hard" && row.status === "confirmed").length,
       hardMandatoryNeedsVerification: hardMandatoryNeedsVerification.length,
       hardMandatoryFailed: hardMandatoryFailed.length,
+      potentialHardBlockers: potentialHardBlockers.length,
       companyConfirmationsNeeded: unknownMandatory.length
     }
   };
@@ -520,7 +694,7 @@ export function evaluateEligibility(company, opportunity, lot, now = new Date())
 
 export function qualificationReadinessScore(eligibility) {
   const mandatory = eligibility.requirementRows.filter((row) => row.mandatory);
-  if (!mandatory.length) return 70;
+  if (!mandatory.length) return 42;
   const confirmed = mandatory.filter((row) => row.status === "confirmed").length;
   const failed = mandatory.filter((row) => row.status === "failed").length;
   const unknown = mandatory.filter((row) => row.status === "needs_verification").length;
