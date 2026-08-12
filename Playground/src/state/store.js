@@ -1,5 +1,6 @@
 import { clone } from "../utils.js";
 import { createDemoState } from "../data/demo.js";
+import { normalizeAiRun } from "../domain/ai-review.js";
 
 const STORAGE_KEY = "oportunex.phase0.store.v1";
 const PERSISTENCE_AVAILABLE_DETAIL = "Browser-local persistence is active.";
@@ -210,7 +211,7 @@ export function normalizeState(input) {
     savedOpportunityIds: sanitizeArray(input.savedOpportunityIds).filter((id) => opportunityIds.has(id)),
     pursuitStatuses: isPlainObject(input.pursuitStatuses) ? input.pursuitStatuses : {},
     feedback: sanitizeArray(input.feedback),
-    aiRuns: sanitizeArray(input.aiRuns),
+    aiRuns: sanitizeArray(input.aiRuns).map(normalizeAiRun),
     manualOverrides: sanitizeArray(input.manualOverrides),
     auditEvents: sanitizeArray(input.auditEvents),
     sourceSyncRuns: sanitizeArray(input.sourceSyncRuns)

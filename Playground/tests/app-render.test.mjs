@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { startApp } from "../src/app.js";
 import { getEvaluationNow } from "../src/clock.js";
-import { DEFAULT_RUNTIME } from "../src/config.js";
+import { ACTION_COPY, DEFAULT_RUNTIME } from "../src/config.js";
 import { createDemoState } from "../src/data/demo.js";
 import { analyzePortfolio } from "../src/domain/analysis.js";
 import { parseSpanishDate } from "../src/domain/deadline.js";
@@ -58,6 +58,8 @@ const STRUCTURED_OPPORTUNITY_JSON = JSON.stringify({
     }
   ]
 });
+
+const CUSTOMER_WHY_BLOCKLIST = /potential hard blocker|eligibility requirements not yet assessed|confirmed eligibility failure|deadline passed|already awarded|cancelled|suspended|unrelated capability|no further action is recommended/i;
 
 function makeUiEvidence() {
   return [
@@ -148,7 +150,8 @@ function createRoot() {
     },
     dispatch(type, event) {
       const handler = listeners.get(type);
-      if (handler) handler(event);
+      if (handler) return handler(event);
+      return undefined;
     }
   };
   Object.defineProperty(root, "innerHTML", {
@@ -235,10 +238,29 @@ function createActionTarget(dataset) {
 }
 
 function clickAction(root, dataset) {
-  root.dispatch("click", {
+  return root.dispatch("click", {
     preventDefault() {},
     target: createActionTarget(dataset)
   });
+}
+
+function expectedCustomerWhy(analysed) {
+  const positiveDetail = analysed?.positives?.find((entry) => entry?.detail)?.detail;
+  if (positiveDetail) return positiveDetail;
+
+  const candidate = analysed?.decision?.mainReason ?? analysed?.executiveVerdict ?? "";
+  if (candidate && !CUSTOMER_WHY_BLOCKLIST.test(candidate)) return candidate;
+
+  return "Relevant opportunity signals remain limited under the current evidence set.";
+}
+
+function expectedCustomerNeedsChecking(analysed) {
+  return (
+    (analysed?.potentialHardBlockers?.[0] ?? analysed?.unknowns?.[0] ?? analysed?.blockers?.[0])?.detail ??
+    analysed?.decision?.mainQuestion ??
+    analysed?.decision?.mainReason ??
+    "No additional blocking question is currently recorded."
+  );
 }
 
 function changeFilter(root, filter, value, checked = false) {
@@ -266,9 +288,12 @@ function assertDecisionConsistency(root, store, scenario) {
     not_suitable: "notSuitable"
   };
   const analysed = portfolio.analysed.find((item) => item.opportunityId === scenario.id);
+  const actionLabel = ACTION_COPY[scenario.code] ?? analysed?.decision?.recommendedAction?.label ?? scenario.code;
   const encodedVerdict = escapeHtml(analysed?.executiveVerdict ?? "");
   const encodedReason = escapeHtml(analysed?.decision?.mainReason ?? "");
   const encodedQuestion = escapeHtml(analysed?.decision?.mainQuestion ?? "");
+  const encodedCardReason = escapeHtml(expectedCustomerWhy(analysed));
+  const encodedCardQuestion = escapeHtml(expectedCustomerNeedsChecking(analysed));
 
   assert.ok(analysed, `Expected analysed opportunity ${scenario.id}`);
   assert.equal(analysed.decision.recommendedAction.code, scenario.code);
@@ -289,7 +314,7 @@ function assertDecisionConsistency(root, store, scenario) {
   assert.match(
     root.innerHTML,
     new RegExp(
-      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(analysed.decision.recommendedAction.label)}[\\s\\S]*?${escapeRegExp(encodedVerdict)}[\\s\\S]*?Why: ${escapeRegExp(encodedReason)}`
+      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
     )
   );
 
@@ -299,20 +324,19 @@ function assertDecisionConsistency(root, store, scenario) {
   assert.match(root.innerHTML, new RegExp(`<h3>${escapeRegExp(analysed.displayTitle)}<\\/h3>`));
   assert.match(
     root.innerHTML,
-    new RegExp(`<span>Recommended action<\\/span>\\s*<strong>${escapeRegExp(analysed.decision.recommendedAction.label)}<\\/strong>`)
+    new RegExp(`<span>Recommended action<\\/span>\\s*<strong>${escapeRegExp(actionLabel)}<\\/strong>`)
   );
   assert.match(
     root.innerHTML,
     new RegExp(
-      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(analysed.decision.recommendedAction.label)}[\\s\\S]*?${escapeRegExp(encodedVerdict)}[\\s\\S]*?Why: ${escapeRegExp(encodedReason)}`
+      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
     )
   );
   assert.match(root.innerHTML, new RegExp(`<span>Main reason<\\/span>\\s*<p>${escapeRegExp(encodedReason)}<\\/p>`));
   assert.match(root.innerHTML, new RegExp(`<span>Main blocker\\/question<\\/span>\\s*<p>${escapeRegExp(encodedQuestion)}<\\/p>`));
-  assert.match(root.innerHTML, new RegExp(`<h4>Executive verdict<\\/h4>\\s*<p>${escapeRegExp(encodedVerdict)}<\\/p>`));
+  assert.match(root.innerHTML, new RegExp(`<\\/div>\\s*<p>${escapeRegExp(encodedVerdict)}<\\/p>`));
   if (scenario.potentialHardBlocker) {
     assert.match(root.innerHTML, new RegExp(`Potential hard blocker:[\\s\\S]*?${escapeRegExp(scenario.potentialHardBlocker)}`));
-    assert.match(root.innerHTML, /No confirmed blocker recorded, but potential hard blockers remain\./);
   }
 }
 
@@ -657,6 +681,76 @@ test("card, detail, bucket and sorting state stay aligned across actionable, ver
     scenarios.forEach((scenario) => {
       assertDecisionConsistency(root, store, scenario);
     });
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("verify-first customer cards keep positive relevance under Why it matters and blocker detail under Needs checking", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    const portfolio = analyzePortfolio(
+      store.getState().companyProfiles[0],
+      store.getState().opportunities,
+      DEFAULT_RUNTIME,
+      getEvaluationNow()
+    );
+    const analysed = portfolio.analysed.find((item) => item.opportunityId === "opp-electrical-maintenance");
+
+    assert.ok(analysed);
+    assert.equal(analysed.decision.recommendedAction.code, "VERIFY_BEFORE_DECIDING");
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "needs_verification" });
+
+    assert.match(
+      root.innerHTML,
+      new RegExp(
+        `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.positives[0].detail))}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(expectedCustomerNeedsChecking(analysed)))}<\\/p>`
+      )
+    );
+    assert.doesNotMatch(
+      root.innerHTML,
+      new RegExp(
+        `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.decision.mainReason))}<\\/p>`
+      )
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("customer opportunity markup escapes imported user-derived text", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    const dangerousOpportunity = makeNoLotUiOpportunity();
+    dangerousOpportunity.id = "opp-escaped-customer-copy";
+    dangerousOpportunity.title = "Escaped <script>alert(1)</script> opportunity";
+    dangerousOpportunity.issuingOrganisation = "Authority <b>danger</b>";
+    nextState.opportunities = [dangerousOpportunity];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "all_analysed" });
+    clickAction(root, { action: "select", id: dangerousOpportunity.id });
+
+    assert.match(root.innerHTML, /Escaped &lt;script&gt;alert\(1\)&lt;\/script&gt; opportunity/);
+    assert.match(root.innerHTML, /Authority &lt;b&gt;danger&lt;\/b&gt;/);
+    assert.doesNotMatch(root.innerHTML, /<script>alert\(1\)<\/script>/);
+    assert.doesNotMatch(root.innerHTML, /<b>danger<\/b>/);
   } finally {
     globalThis.window = previousWindow;
   }
