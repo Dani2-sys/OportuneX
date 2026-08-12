@@ -84,11 +84,11 @@ test("AI verifier request uses configured server-side model and strict structure
   assert.ok("corrected_fit_band" in requestBody.text.format.schema.properties);
   assert.deepEqual(
     requestBody.text.format.schema.properties.corrected_fit_band.anyOf[0].enum,
-    ["EXCELLENT_FIT", "STRONG_FIT", "POSSIBLE_FIT", "LOW_PRIORITY", "DO_NOT_PURSUE"]
+    ["EXCELLENT_FIT", "STRONG_FIT", "POSSIBLE_FIT", "LOW_PRIORITY"]
   );
   assert.doesNotMatch(
     JSON.stringify(requestBody.text.format.schema.properties.corrected_fit_band.anyOf[0].enum),
-    /VERIFY_BEFORE_DECIDING/
+    /VERIFY_BEFORE_DECIDING|DO_NOT_PURSUE/
   );
 });
 
@@ -116,6 +116,20 @@ test("AI verifier rejects action vocabulary in corrected_fit_band", () => {
     corrected_fit_band: "VERIFY_BEFORE_DECIDING",
     confidence: "medium",
     notes: "Cross-enum validation should reject action vocabulary in fit-band fields."
+  });
+
+  assert.equal(error, "corrected_fit_band must use canonical fit-band values, not action values.");
+});
+
+test('AI verifier rejects corrected_fit_band = "DO_NOT_PURSUE"', () => {
+  const error = validateVerificationResult({
+    review_status: "needs_review",
+    warnings: [],
+    disagreements: [],
+    corrected_action: "DO_NOT_PURSUE",
+    corrected_fit_band: "DO_NOT_PURSUE",
+    confidence: "medium",
+    notes: "Action vocabulary must not be accepted in the fit-band field."
   });
 
   assert.equal(error, "corrected_fit_band must use canonical fit-band values, not action values.");

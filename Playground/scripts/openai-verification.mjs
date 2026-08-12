@@ -8,8 +8,7 @@ const CANONICAL_FIT_BANDS = [
   "EXCELLENT_FIT",
   "STRONG_FIT",
   "POSSIBLE_FIT",
-  "LOW_PRIORITY",
-  "DO_NOT_PURSUE"
+  "LOW_PRIORITY"
 ];
 
 export const verificationSchema = {
