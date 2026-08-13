@@ -128,6 +128,77 @@ function makeNoLotUiOpportunity() {
   };
 }
 
+function makeProgrammeBudgetUiGrant() {
+  return {
+    id: "bdns-ui-programme-budget",
+    sourceConnector: "bdns",
+    sourceOpportunityId: "700007",
+    sourceNoticeVersionId: "bdns-version:ui-programme-budget",
+    type: "grant",
+    noticeType: "grant_call",
+    status: "open",
+    title: "Programme budget only grant",
+    description: "Grant without a structured maximum aid per beneficiary.",
+    publicationDate: "2026-08-10",
+    deadline: parseSpanishDate("01/11/2026 23:59"),
+    location: {
+      municipality: "",
+      province: "",
+      autonomousCommunity: "Andalusia",
+      display: "Andalusia"
+    },
+    cpvCodes: [],
+    keywords: ["grant"],
+    relevantValue: null,
+    estimatedValue: null,
+    awardValue: null,
+    baseBudget: null,
+    wholeProcedureValue: null,
+    annualValue: null,
+    multiYearValue: null,
+    maximumAidPerBeneficiary: null,
+    programmeBudget: createMoney({
+      major: 10000000,
+      currency: "EUR",
+      amountType: "programme_budget",
+      vatStatus: "unknown",
+      source: "official_snpsap_api"
+    }),
+    eligibleProjectCost: null,
+    aidIntensity: "",
+    duration: "",
+    guarantees: "",
+    submissionMechanism: "Official electronic application site",
+    applicationUrl: "https://sede.example.gob.es/grants/700007",
+    noticeUrl: "https://www.infosubvenciones.es/bdnstrans/GE/es/convocatorias/700007",
+    referenceNumber: "700007",
+    requiredDocuments: [],
+    documents: [],
+    contacts: [],
+    sources: [
+      {
+        id: "bdns-ui-source-700007",
+        organisation: "Sistema Nacional de Publicidad de Subvenciones y Ayudas Publicas",
+        title: "Official BDNS API",
+        url: "https://www.infosubvenciones.es/bdnstrans/api/convocatorias?numConv=700007&vpd=GE",
+        official: true,
+        publishedAt: "2026-08-10",
+        lastChecked: "2026-08-13T09:00:00Z",
+        metadata: {
+          sourceType: "official_snpsap_api"
+        }
+      }
+    ],
+    evidence: [],
+    requirements: [],
+    sourceConflicts: [],
+    availabilityWarnings: [],
+    lots: [],
+    cancellationStatus: null,
+    lastChecked: "2026-08-13T09:00:00Z"
+  };
+}
+
 function makeCachedPlacspOpportunity(overrides = {}) {
   return {
     ...makeNoLotUiOpportunity(),
@@ -675,6 +746,48 @@ test("normal UI keeps whole-opportunity wording when a contract has no published
     assert.match(root.innerHTML, /Estimated contract value: €100,000 excl\. VAT/);
     assert.doesNotMatch(root.innerHTML, /Relevant lot/i);
     assert.doesNotMatch(root.innerHTML, /lot value/i);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("grant cards and detail views keep programme budget separate from company amount wording", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    const opportunity = makeProgrammeBudgetUiGrant();
+    nextState.opportunities = [opportunity];
+    store.replace(nextState);
+
+    const portfolio = analyzePortfolio(
+      nextState.companyProfiles[0],
+      nextState.opportunities,
+      DEFAULT_RUNTIME,
+      getEvaluationNow()
+    );
+    const analysed = portfolio.analysed[0];
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: analysed.decision.recommendedAction.bucket });
+
+    assert.match(root.innerHTML, /Programme budget: €10,000,000/);
+    assert.doesNotMatch(root.innerHTML, /Maximum aid: €10,000,000/);
+    assert.doesNotMatch(root.innerHTML, /Your potential amount: €10,000,000/);
+    assert.doesNotMatch(root.innerHTML, /Company amount: €10,000,000/);
+
+    clickAction(root, { action: "select", id: opportunity.id });
+    clickAction(root, { action: "tab", tab: "report" });
+
+    assert.match(root.innerHTML, /Programme budget[\s\S]*?€10,000,000/);
+    assert.match(root.innerHTML, /<li>Programme budget: €10,000,000<\/li>/);
+    assert.doesNotMatch(root.innerHTML, /Maximum aid per beneficiary: €10,000,000/);
+    assert.doesNotMatch(root.innerHTML, /Your potential amount: €10,000,000/);
+    assert.doesNotMatch(root.innerHTML, /Company amount: €10,000,000/);
   } finally {
     globalThis.window = previousWindow;
   }

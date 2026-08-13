@@ -8,11 +8,11 @@ const SOURCE_CACHE_SOURCE_OPPORTUNITY_INDEX = "sourceOpportunityId";
 const SOURCE_CACHE_AVAILABLE_DETAIL =
   "Source cache persistence is active for official connector opportunities.";
 const SOURCE_CACHE_UNAVAILABLE_DETAIL =
-  "Source cache persistence is unavailable. PLACSP opportunities can still work for this session but may be lost after reload.";
+  "Source cache persistence is unavailable. Official connector opportunities can still work for this session but may be lost after reload.";
 const SOURCE_CACHE_LOAD_ERROR_DETAIL =
   "Stored source opportunities could not be loaded. OportuneX continued with the local workspace state for this session.";
 const SOURCE_CACHE_SAVE_ERROR_DETAIL =
-  "Source cache persistence failed. Current PLACSP opportunities still work in memory for this session.";
+  "Source cache persistence failed. Current official connector opportunities still work in memory for this session.";
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -152,6 +152,12 @@ export function isPlacspSourceOpportunity(opportunity) {
   return isSourceOpportunityForConnector(opportunity, "placsp");
 }
 
+export function isSourceOpportunity(opportunity) {
+  if (!isPlainObject(opportunity)) return false;
+  if (normalizeConnector(opportunity.sourceConnector, "")) return true;
+  return isPlacspSourceOpportunity(opportunity);
+}
+
 export function filterOutSourceOpportunities(opportunities = [], connector = "placsp") {
   return sanitizeArray(opportunities).filter((item) => !isSourceOpportunityForConnector(item, connector));
 }
@@ -190,6 +196,18 @@ function normalizeAdapterResult(result, fallbackCode, fallbackMessage) {
     code: fallbackCode,
     message: fallbackMessage
   };
+}
+
+async function safeAdapterResult(call, fallbackCode, fallbackMessage) {
+  try {
+    return normalizeAdapterResult(await call(), fallbackCode, fallbackMessage);
+  } catch (error) {
+    return {
+      ok: false,
+      code: fallbackCode,
+      message: serializeError(error) || fallbackMessage
+    };
+  }
 }
 
 function createUnavailableResult() {
@@ -489,8 +507,8 @@ export function createSourceOpportunityCache({
 
   async function loadByConnector(connector) {
     const startedAt = Date.now();
-    const result = normalizeAdapterResult(
-      await adapter.loadByConnector(connector),
+    const result = await safeAdapterResult(
+      () => adapter.loadByConnector(connector),
       "SOURCE_CACHE_LOAD_FAILED",
       "Source cache load failed."
     );
@@ -547,8 +565,8 @@ export function createSourceOpportunityCache({
   }
 
   async function upsertMany(connector, opportunities) {
-    const result = normalizeAdapterResult(
-      await adapter.upsertMany(connector, sanitizeArray(opportunities).map((item) => normalizeOpportunityForConnector(item, connector))),
+    const result = await safeAdapterResult(
+      () => adapter.upsertMany(connector, sanitizeArray(opportunities).map((item) => normalizeOpportunityForConnector(item, connector))),
       "SOURCE_CACHE_SAVE_FAILED",
       "Source cache save failed."
     );
@@ -591,8 +609,8 @@ export function createSourceOpportunityCache({
   }
 
   async function count(connector) {
-    const result = normalizeAdapterResult(
-      await adapter.count(connector),
+    const result = await safeAdapterResult(
+      () => adapter.count(connector),
       "SOURCE_CACHE_COUNT_FAILED",
       "Source cache count failed."
     );
@@ -612,8 +630,8 @@ export function createSourceOpportunityCache({
   }
 
   async function clearConnector(connector) {
-    const result = normalizeAdapterResult(
-      await adapter.clearConnector(connector),
+    const result = await safeAdapterResult(
+      () => adapter.clearConnector(connector),
       "SOURCE_CACHE_CLEAR_FAILED",
       "Source cache clear failed."
     );
@@ -643,8 +661,8 @@ export function createSourceOpportunityCache({
 
   async function getConnectorState(connector) {
     const normalizedConnector = normalizeConnector(connector, "placsp");
-    const result = normalizeAdapterResult(
-      await adapter.getConnectorState?.(normalizedConnector),
+    const result = await safeAdapterResult(
+      () => adapter.getConnectorState?.(normalizedConnector),
       "SOURCE_CACHE_CONNECTOR_STATE_LOAD_FAILED",
       "Source connector state load failed."
     );
@@ -666,8 +684,8 @@ export function createSourceOpportunityCache({
 
   async function setConnectorState(connector, state) {
     const normalizedConnector = normalizeConnector(connector, "placsp");
-    const result = normalizeAdapterResult(
-      await adapter.setConnectorState?.(normalizedConnector, state),
+    const result = await safeAdapterResult(
+      () => adapter.setConnectorState?.(normalizedConnector, state),
       "SOURCE_CACHE_CONNECTOR_STATE_SAVE_FAILED",
       "Source connector state save failed."
     );

@@ -52,6 +52,7 @@ import {
 } from "./domain/ai-review.js";
 import { importCompanyProfileFromJson } from "./services/company-importer.js";
 import { importOpportunityFromJson, importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
+import { runBdnsSync } from "./services/bdns-sync.js";
 import { runPlacspSync } from "./services/placsp-sync.js";
 import {
   createConnectorState,
@@ -136,6 +137,9 @@ const UI_STATE_DEFAULTS = {
   opportunityJsonDraft: "",
   placspMaxPages: 1,
   placspSyncing: false,
+  bdnsMaxPages: 1,
+  bdnsPageSize: 20,
+  bdnsSyncing: false,
   formFeedback: {
     companyImport: null,
     opportunityJsonImport: null
@@ -239,15 +243,44 @@ function normalizePlacspMaxPages(value) {
   return Math.min(5, Math.max(1, Math.round(parsed)));
 }
 
+function normalizeBdnsMaxPages(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.min(3, Math.max(1, Math.round(parsed)));
+}
+
+function normalizeBdnsPageSize(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 20;
+  return Math.min(50, Math.max(10, Math.round(parsed)));
+}
+
 function isPlacspSyncRun(run) {
   const connector = run?.connector?.toString?.().toLowerCase?.() ?? "";
   const source = run?.source?.toString?.().toLowerCase?.() ?? "";
   return connector === "placsp" || source === "placsp";
 }
 
+function isBdnsSyncRun(run) {
+  const connector = run?.connector?.toString?.().toLowerCase?.() ?? "";
+  const source = run?.source?.toString?.().toLowerCase?.() ?? "";
+  return connector === "bdns" || source === "bdns / snpsap" || source === "bdns" || source === "snpsap";
+}
+
 function getLatestPlacspSyncRun(state) {
   return (state.sourceSyncRuns ?? [])
     .filter(isPlacspSyncRun)
+    .slice()
+    .sort((left, right) =>
+      String(right.completedAt ?? right.lastRun ?? right.startedAt ?? "").localeCompare(
+        String(left.completedAt ?? left.lastRun ?? left.startedAt ?? "")
+      )
+    )[0] ?? null;
+}
+
+function getLatestBdnsSyncRun(state) {
+  return (state.sourceSyncRuns ?? [])
+    .filter(isBdnsSyncRun)
     .slice()
     .sort((left, right) =>
       String(right.completedAt ?? right.lastRun ?? right.startedAt ?? "").localeCompare(
@@ -285,6 +318,16 @@ function buildPlacspRunNote(payload, runMode) {
   return "Official PLACSP sync completed.";
 }
 
+function buildBdnsRunNote(payload) {
+  if ((payload?.detailFailures?.length ?? 0) > 0 && (payload?.detailsFetched ?? 0) > 0) {
+    return "Official BDNS / SNPSAP sync completed with isolated detail failures.";
+  }
+  if (payload?.truncated) {
+    return "Official BDNS / SNPSAP sync completed with a bounded detail cap.";
+  }
+  return "Official BDNS / SNPSAP sync completed.";
+}
+
 function toneForSourceStatus(status) {
   if (status === "healthy" || status === "ready") return "good";
   if (status === "planned" || status === "syncing") return "warn";
@@ -293,6 +336,14 @@ function toneForSourceStatus(status) {
 
 function formatSourceRunMoment(run) {
   return run?.completedAt ?? run?.lastRun ?? run?.startedAt ?? null;
+}
+
+function previewValueLabel(item) {
+  const primaryLine = item?.financialPicture?.primaryLine ?? null;
+  if (item?.opportunity?.type === "grant" && primaryLine?.id === "programme_budget") {
+    return `${primaryLine.label}: ${primaryLine.displayValue}`;
+  }
+  return item?.displayValueLabel ?? "Value not published";
 }
 
 function mergeEvidenceRecords(existing = [], incoming = []) {
@@ -465,6 +516,82 @@ function buildPlacspFailureRun(error, { runMode = "manual", requestMode = "manua
     unchanged: 0,
     sourceFeedUpdated: null,
     errors: [error?.message ?? "Unknown PLACSP sync error."]
+  };
+}
+
+function mergeBdnsSyncResult(draft, payload) {
+  let inserted = 0;
+  let updated = 0;
+  let unchanged = 0;
+
+  (payload.opportunities ?? []).forEach((opportunity) => {
+    const existingIndex = draft.opportunities.findIndex((item) => item.id === opportunity.id);
+    if (existingIndex === -1) {
+      draft.opportunities.unshift(opportunity);
+      inserted += 1;
+      return;
+    }
+
+    const existing = draft.opportunities[existingIndex];
+    if (existing.sourceNoticeVersionId === opportunity.sourceNoticeVersionId) {
+      unchanged += 1;
+    } else {
+      updated += 1;
+    }
+    draft.opportunities.splice(existingIndex, 1, opportunity);
+  });
+
+  const run = {
+    id: uid("sync"),
+    mode: "manual",
+    sourceMode: payload?.mode ?? "manual",
+    connector: "bdns",
+    source: "BDNS / SNPSAP",
+    status: "healthy",
+    startedAt: payload.startedAt ?? payload.fetchedAt ?? new Date().toISOString(),
+    completedAt: payload.completedAt ?? payload.fetchedAt ?? new Date().toISOString(),
+    lastRun: payload.completedAt ?? payload.fetchedAt ?? new Date().toISOString(),
+    note: buildBdnsRunNote(payload),
+    truncated: payload.truncated ?? false,
+    pagesFetched: payload.pagesFetched ?? 0,
+    pageSize: payload.pageSize ?? payload.pageSizeRequested ?? 20,
+    callsDiscovered: payload.discoveryCount ?? 0,
+    uniqueEntries: payload.uniqueCodes ?? payload.stats?.uniqueEntries ?? 0,
+    detailsFetched: payload.detailsFetched ?? 0,
+    detailFailures: payload.detailFailures?.length ?? 0,
+    opportunitiesInserted: inserted,
+    opportunitiesUpdated: updated,
+    unchanged,
+    errors: (payload.detailFailures ?? []).map((item) => item.message ?? String(item))
+  };
+  prependSourceSyncRun(draft, run);
+  return run;
+}
+
+function buildBdnsFailureRun(error, { pages = 1, pageSize = 20 } = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: uid("sync"),
+    mode: "manual",
+    sourceMode: "manual",
+    connector: "bdns",
+    source: "BDNS / SNPSAP",
+    status: "error",
+    startedAt: now,
+    completedAt: now,
+    lastRun: now,
+    note: "Official BDNS / SNPSAP sync failed.",
+    pagesRequested: pages,
+    pageSize,
+    pagesFetched: 0,
+    callsDiscovered: 0,
+    uniqueEntries: 0,
+    detailsFetched: 0,
+    detailFailures: 0,
+    opportunitiesInserted: 0,
+    opportunitiesUpdated: 0,
+    unchanged: 0,
+    errors: [error?.message ?? "Unknown BDNS sync error."]
   };
 }
 
@@ -961,6 +1088,30 @@ function describePlacspSyncSuccess(syncRun, { workspacePersisted, sourceCachePer
   return message;
 }
 
+function describeBdnsSyncStart(pages, pageSize) {
+  return `Syncing BDNS / SNPSAP from the latest ${pages} page${pages === 1 ? "" : "s"} at ${pageSize} call${pageSize === 1 ? "" : "s"} per page...`;
+}
+
+function describeBdnsSyncSuccess(syncRun, { workspacePersisted, sourceCachePersisted }) {
+  let message = `BDNS / SNPSAP sync completed: ${syncRun.opportunitiesInserted} inserted, ${syncRun.opportunitiesUpdated} updated, ${syncRun.unchanged} unchanged.`;
+
+  if ((syncRun.detailFailures ?? 0) > 0) {
+    message += ` ${syncRun.detailFailures} detail call${syncRun.detailFailures === 1 ? "" : "s"} failed and were skipped conservatively.`;
+  }
+  if (syncRun.truncated) {
+    message += " The synchronization stopped at the configured detail safety cap.";
+  }
+  if (!sourceCachePersisted && workspacePersisted) {
+    message += " Source cache persistence is unavailable, so these BDNS records may be lost after reload.";
+  } else if (sourceCachePersisted && !workspacePersisted) {
+    message += " Source records were cached, but workspace persistence is unavailable for some local user state.";
+  } else if (!sourceCachePersisted && !workspacePersisted) {
+    message += " Browser persistence is unavailable for both the workspace and the source cache.";
+  }
+
+  return message;
+}
+
 function upsertCompanyProfile(draft, importedProfile) {
   const existingIndex = draft.companyProfiles.findIndex((item) => item.id === importedProfile.id);
   if (existingIndex >= 0) draft.companyProfiles.splice(existingIndex, 1, importedProfile);
@@ -1204,7 +1355,7 @@ function renderOpportunityPreview(item, { now, aiReview, persistence, showAction
       <h3>${escapeHtml(item.displayTitle)}</h3>
       <p class="opportunity-subline">${escapeHtml(organisation)}</p>
       <div class="opportunity-metrics">
-        <span>${escapeHtml(item.displayValueLabel)}</span>
+        <span>${escapeHtml(previewValueLabel(item))}</span>
         <span>${escapeHtml(item.locationLabel || "Location not stated")}</span>
         <span>${escapeHtml(urgencyChip(item.opportunity, now))}</span>
       </div>
@@ -2082,14 +2233,19 @@ function renderLabPage(derived, persistence) {
   `;
 }
 
-function renderSourcesPage(state, runtime, sourceCache, connectorState, refreshScheduler) {
+function renderSourcesPage(state, runtime, sourceCache, connectorStates, refreshScheduler) {
   const aiStatus = getAiStatusMeta(runtime.ai);
   const placspRun = getLatestPlacspSyncRun(state);
+  const bdnsRun = getLatestBdnsSyncRun(state);
   const sourceCacheMeta = getSourceCacheMeta(sourceCache);
-  const placspState = createConnectorState("placsp", connectorState);
+  const placspState = createConnectorState("placsp", connectorStates?.placsp);
+  const bdnsState = createConnectorState("bdns", connectorStates?.bdns);
   const placspCachedCount =
     sourceCache?.counts?.placsp ??
     state.opportunities.filter((item) => isPlacspSourceOpportunity(item)).length;
+  const bdnsCachedCount =
+    sourceCache?.counts?.bdns ??
+    state.opportunities.filter((item) => item.sourceConnector === "bdns").length;
   const placspStatusLabel = uiState.placspSyncing
     ? "Syncing"
     : placspRun?.status === "healthy"
@@ -2108,7 +2264,26 @@ function renderSourcesPage(state, runtime, sourceCache, connectorState, refreshS
         : runtime.connectors?.placsp === "ready"
           ? "good"
           : "warn";
+  const bdnsStatusLabel = uiState.bdnsSyncing
+    ? "Syncing"
+    : bdnsRun?.status === "healthy"
+      ? "Last sync successful"
+      : bdnsRun?.status === "error"
+        ? "Error"
+        : runtime.connectors?.bdns === "ready"
+          ? "Ready"
+          : "Planned";
+  const bdnsStatusTone = uiState.bdnsSyncing
+    ? "warn"
+    : bdnsRun?.status === "healthy"
+      ? "good"
+      : bdnsRun?.status === "error"
+        ? "bad"
+        : runtime.connectors?.bdns === "ready"
+          ? "good"
+          : "warn";
   const placspErrors = placspRun?.errors ?? [];
+  const bdnsErrors = bdnsRun?.errors ?? [];
   const nextAutomaticRefreshAt = refreshScheduler?.getNextAutomaticRefreshAt
     ? refreshScheduler.getNextAutomaticRefreshAt(placspState)
     : getNextAutomaticRefreshAt(placspState);
@@ -2126,7 +2301,21 @@ function renderSourcesPage(state, runtime, sourceCache, connectorState, refreshS
       ? "Recent bounded reconciliation is overdue."
       : null
   ].filter(Boolean);
-  const secondaryRuns = (state.sourceSyncRuns ?? []).filter((run) => !isPlacspSyncRun(run));
+  const bdnsWarnings = [
+    (sourceCache?.status === "unavailable" || sourceCache?.status === "error")
+      ? sourceCacheMeta.detail
+      : null,
+    bdnsRun?.truncated ? "The synchronization stopped at the configured BDNS detail safety cap." : null,
+    (bdnsRun?.detailFailures ?? 0) > 0
+      ? `${bdnsRun.detailFailures} detail call${bdnsRun.detailFailures === 1 ? "" : "s"} failed and were skipped conservatively.`
+      : null,
+    bdnsState.lastErrorAt && bdnsState.lastErrorCode
+      ? "The last BDNS manual synchronization failed."
+      : null
+  ].filter(Boolean);
+  const secondaryRuns = (state.sourceSyncRuns ?? []).filter(
+    (run) => !isPlacspSyncRun(run) && !isBdnsSyncRun(run)
+  );
   return `
     <section class="page-grid">
       <article class="card">
@@ -2218,6 +2407,87 @@ function renderSourcesPage(state, runtime, sourceCache, connectorState, refreshS
               </button>
             </div>
             <small>${hasPlacspIncrementalCursor(placspState) ? "Sync now uses the stored PLACSP cursor for incremental refresh." : "Sync now will seed the local PLACSP cursor from the selected page window."}</small>
+          </article>
+          <article class="source-card">
+            <div class="card-topline">
+              ${pill("BDNS / SNPSAP", "neutral")}
+              ${pill(bdnsStatusLabel, bdnsStatusTone)}
+            </div>
+            <p>Official Spanish grants and public aid calls from the Sistema Nacional de Publicidad de Subvenciones y Ayudas Publicas API.</p>
+            <small>
+              ${bdnsRun ? `Last synchronized ${escapeHtml(formatLastChecked(formatSourceRunMoment(bdnsRun)))}` : "No BDNS / SNPSAP sync has completed yet."}
+            </small>
+            <ul class="tight-list">
+              <li>Sync mode: Manual only in Phase 0.5A</li>
+              <li>Last manual refresh: ${escapeHtml(formatTimestampDetail(bdnsState.lastManualSyncAt, "Not yet run"))}</li>
+              <li>Last mode: ${escapeHtml(placspRunModeLabel(bdnsState.lastRunMode))}</li>
+              <li>Source cache: ${escapeHtml(sourceCacheMeta.label)}</li>
+              <li>Cached grants: ${bdnsCachedCount}</li>
+              <li>Pages fetched: ${bdnsRun?.pagesFetched ?? 0}</li>
+              <li>Page size: ${bdnsRun?.pageSize ?? uiState.bdnsPageSize}</li>
+              <li>Calls discovered: ${bdnsRun?.callsDiscovered ?? 0}</li>
+              <li>Details fetched: ${bdnsRun?.detailsFetched ?? 0}</li>
+              <li>Detail failures: ${bdnsRun?.detailFailures ?? 0}</li>
+              <li>Inserted: ${bdnsRun?.opportunitiesInserted ?? 0}</li>
+              <li>Updated: ${bdnsRun?.opportunitiesUpdated ?? 0}</li>
+              <li>Unchanged: ${bdnsRun?.unchanged ?? 0}</li>
+            </ul>
+            <small>${escapeHtml(sourceCacheMeta.detail)}</small>
+            <br />
+            <small>
+              ${
+                sourceCache?.lastHydratedAt
+                  ? `Last cache hydration ${escapeHtml(formatLastChecked(sourceCache.lastHydratedAt))}${sourceCache?.hydrationMs != null ? ` (${sourceCache.hydrationMs} ms)` : ""}`
+                  : "Cache hydration has not completed yet."
+              }
+            </small>
+            ${
+              sourceCache?.lastSavedAt
+                ? `
+                    <br />
+                    <small>Last cache write ${escapeHtml(formatLastChecked(sourceCache.lastSavedAt))}</small>
+                  `
+                : ""
+            }
+            ${bdnsErrors.length ? `<small>${escapeHtml(bdnsErrors[0])}</small>` : ""}
+            ${getSourceCacheErrorMessage(sourceCache) ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>` : ""}
+            ${
+              bdnsWarnings.length
+                ? `
+                    <div class="stack">
+                      ${bdnsWarnings.map((warning) => `<small>${escapeHtml(warning)}</small>`).join("")}
+                    </div>
+                  `
+                : ""
+            }
+            <div class="form-actions">
+              <label>
+                Recent pages
+                <select data-control="bdns-pages" ${uiState.bdnsSyncing ? "disabled" : ""}>
+                  ${[1, 2, 3]
+                    .map(
+                      (value) =>
+                        `<option value="${value}" ${uiState.bdnsMaxPages === value ? "selected" : ""}>${value}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+              <label>
+                Page size
+                <select data-control="bdns-page-size" ${uiState.bdnsSyncing ? "disabled" : ""}>
+                  ${[10, 20, 30, 40, 50]
+                    .map(
+                      (value) =>
+                        `<option value="${value}" ${uiState.bdnsPageSize === value ? "selected" : ""}>${value}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+              <button class="button-primary" data-action="sync-bdns" ${uiState.bdnsSyncing ? "disabled" : ""}>
+                ${uiState.bdnsSyncing ? "Syncing BDNS..." : "Sync BDNS"}
+              </button>
+            </div>
+            <small>Discovery uses the latest published calls endpoint, then enriches each unique BDNS code with bounded detail requests.</small>
           </article>
           ${secondaryRuns
             .map(
@@ -2324,12 +2594,12 @@ function renderEvaluationPage(derived) {
   `;
 }
 
-function renderHealthPage(state, runtime, derived, persistence, sourceCache, connectorState, refreshScheduler) {
+function renderHealthPage(state, runtime, derived, persistence, sourceCache, connectorStates, refreshScheduler) {
   const footprint = Math.round(JSON.stringify(serializeStateForPersistence(state)).length / 1024);
   const aiStatus = getAiStatusMeta(runtime.ai);
   const persistenceMeta = getPersistenceMeta(persistence);
   const sourceCacheMeta = getSourceCacheMeta(sourceCache);
-  const placspState = createConnectorState("placsp", connectorState);
+  const placspState = createConnectorState("placsp", connectorStates?.placsp);
   const analysisCacheMetrics = derived.analysisCacheMetrics ?? null;
   const nextAutomaticRefreshAt = refreshScheduler?.getNextAutomaticRefreshAt
     ? refreshScheduler.getNextAutomaticRefreshAt(placspState)
@@ -2529,7 +2799,12 @@ function renderDetailPanel(derived, persistence, showDebugger = false) {
           <h3>${escapeHtml(selected.displayTitle)}</h3>
           <p>${escapeHtml(authorityLabel)} · ${escapeHtml(OPPORTUNITY_TYPES[raw.type] ?? "Opportunity")}</p>
           <div class="detail-key-facts">
-            ${statCard("Published value", selected.displayValueLabel)}
+            ${statCard(
+              raw.type === "grant" && selected.financialPicture?.primaryLine?.id === "programme_budget"
+                ? "Programme budget"
+                : "Published value",
+              selected.displayValueLabel
+            )}
             ${statCard("Location", selected.locationLabel || "Not stated")}
             ${statCard("Deadline", formatDeadline(raw.deadline))}
             ${statCard("Decision confidence", CONFIDENCE_COPY[selected.confidenceShield.label])}
@@ -2898,7 +3173,7 @@ function layout(content, runtime, derived, persistence, sourceCache) {
   `;
 }
 
-function renderRoute(route, state, runtime, derived, persistence, sourceCache, connectorState, refreshScheduler) {
+function renderRoute(route, state, runtime, derived, persistence, sourceCache, connectorStates, refreshScheduler) {
   switch (route) {
     case "opportunities":
       return renderOpportunityList(derived, persistence);
@@ -2909,13 +3184,13 @@ function renderRoute(route, state, runtime, derived, persistence, sourceCache, c
     case "lab":
       return renderLabPage(derived, persistence);
     case "sources":
-      return renderSourcesPage(state, runtime, sourceCache, connectorState, refreshScheduler);
+      return renderSourcesPage(state, runtime, sourceCache, connectorStates, refreshScheduler);
     case "debug":
       return renderDebugPage(derived, persistence);
     case "evaluation":
       return renderEvaluationPage(derived);
     case "health":
-      return renderHealthPage(state, runtime, derived, persistence, sourceCache, connectorState, refreshScheduler);
+      return renderHealthPage(state, runtime, derived, persistence, sourceCache, connectorStates, refreshScheduler);
     default:
       return renderOverview(derived, persistence);
   }
@@ -2977,12 +3252,15 @@ function answerQuestion(store, company, questionId, answer) {
 export function startApp(root, { runtime, store, services = {} }) {
   resetUiState();
   const aiVerificationService = services.runAiVerification ?? runAiVerification;
+  const bdnsSyncService = services.runBdnsSync ?? runBdnsSync;
   const placspSyncService = services.runPlacspSync ?? runPlacspSync;
   const sourceCacheService = services.sourceCache ?? null;
   const analysisCacheService = services.analysisCache ?? createAnalysisCache();
   let sourceCacheStatus = sourceCacheService?.getStatus?.() ?? null;
   let placspConnectorState = createConnectorState("placsp");
+  let bdnsConnectorState = createConnectorState("bdns");
   let placspSyncActive = false;
+  let bdnsSyncActive = false;
 
   if (sourceCacheService?.subscribe) {
     sourceCacheService.subscribe((nextStatus) => {
@@ -3002,7 +3280,10 @@ export function startApp(root, { runtime, store, services = {} }) {
       derived,
       persistence,
       sourceCacheStatus,
-      placspConnectorState,
+      {
+        placsp: placspConnectorState,
+        bdns: bdnsConnectorState
+      },
       refreshScheduler
     );
     root.innerHTML = layout(content, runtime, derived, persistence, sourceCacheStatus);
@@ -3017,6 +3298,13 @@ export function startApp(root, { runtime, store, services = {} }) {
     );
     await sourceCacheService.setConnectorState?.("placsp", placspConnectorState);
     return placspConnectorState;
+  }
+
+  async function hydrateBdnsConnectorState() {
+    if (!sourceCacheService?.getConnectorState) return bdnsConnectorState;
+    const result = await sourceCacheService.getConnectorState("bdns");
+    bdnsConnectorState = createConnectorState("bdns", result?.state ?? createConnectorState("bdns"));
+    return bdnsConnectorState;
   }
 
   async function hydratePlacspSourceCache() {
@@ -3050,6 +3338,29 @@ export function startApp(root, { runtime, store, services = {} }) {
     return loadResult;
   }
 
+  async function hydrateBdnsSourceCache() {
+    if (!sourceCacheService) {
+      return {
+        ok: true,
+        count: 0,
+        durationMs: 0
+      };
+    }
+
+    const loadResult = await sourceCacheService.loadByConnector("bdns");
+    sourceCacheStatus = sourceCacheService.getStatus();
+
+    if (!loadResult.ok) {
+      render();
+      return loadResult;
+    }
+
+    const nextState = clone(store.getState());
+    nextState.opportunities = mergeSourceOpportunities(nextState.opportunities, "bdns", loadResult.opportunities);
+    store.replace(nextState);
+    return loadResult;
+  }
+
   async function persistPlacspConnectorState(patch) {
     placspConnectorState = createConnectorState("placsp", {
       ...placspConnectorState,
@@ -3059,6 +3370,17 @@ export function startApp(root, { runtime, store, services = {} }) {
     const result = await sourceCacheService.setConnectorState("placsp", placspConnectorState);
     placspConnectorState = result?.state ?? placspConnectorState;
     return placspConnectorState;
+  }
+
+  async function persistBdnsConnectorState(patch) {
+    bdnsConnectorState = createConnectorState("bdns", {
+      ...bdnsConnectorState,
+      ...patch
+    });
+    if (!sourceCacheService?.setConnectorState) return bdnsConnectorState;
+    const result = await sourceCacheService.setConnectorState("bdns", bdnsConnectorState);
+    bdnsConnectorState = result?.state ?? bdnsConnectorState;
+    return bdnsConnectorState;
   }
 
   async function performPlacspSync({
@@ -3177,6 +3499,101 @@ export function startApp(root, { runtime, store, services = {} }) {
     }
   }
 
+  async function performBdnsSync({
+    pages = uiState.bdnsMaxPages,
+    pageSize = uiState.bdnsPageSize,
+    showMessage = true
+  } = {}) {
+    if (bdnsSyncActive) {
+      return {
+        ok: false,
+        busy: true
+      };
+    }
+
+    bdnsSyncActive = true;
+    uiState.bdnsSyncing = true;
+    if (showMessage) {
+      setMessage(describeBdnsSyncStart(pages, pageSize), "info", "compact");
+      render();
+    }
+
+    try {
+      const payload = await bdnsSyncService({
+        pages,
+        pageSize
+      });
+      const nextState = clone(store.getState());
+      const syncRun = mergeBdnsSyncResult(nextState, payload);
+      nextState.auditEvents = [
+        makeAudit(
+          syncRun.note,
+          `Fetched ${payload.pagesFetched} page(s), discovered ${payload.discoveryCount} calls, and enriched ${payload.detailsFetched} detailed grant records.`
+        ),
+        ...(nextState.auditEvents ?? [])
+      ].slice(0, 50);
+
+      let cacheResult = { ok: true };
+      if (sourceCacheService) {
+        const touchedIds = new Set((payload.opportunities ?? []).map((item) => item.id));
+        if (touchedIds.size > 0) {
+          const touchedBdnsOpportunities = nextState.opportunities.filter(
+            (item) => touchedIds.has(item.id) && item.sourceConnector === "bdns"
+          );
+          cacheResult = await sourceCacheService.upsertMany("bdns", touchedBdnsOpportunities);
+          sourceCacheStatus = sourceCacheService.getStatus();
+        }
+      }
+
+      store.replace(nextState);
+      const completedAt = payload.completedAt ?? new Date().toISOString();
+      await persistBdnsConnectorState({
+        lastSuccessfulSyncAt: completedAt,
+        lastManualSyncAt: completedAt,
+        lastRunMode: "manual",
+        lastPagesFetched: payload.pagesFetched ?? 0,
+        lastErrorAt: null,
+        lastErrorCode: null,
+        truncated: payload.truncated ?? false,
+        cursorReached: null
+      });
+
+      const persistenceStatus = store.getPersistenceStatus();
+      const workspacePersisted = persistenceStatus.status === "available";
+      const sourceCachePersisted = !sourceCacheService || cacheResult.ok === true;
+      if (showMessage) {
+        setMessage(
+          describeBdnsSyncSuccess(syncRun, {
+            workspacePersisted,
+            sourceCachePersisted
+          }),
+          workspacePersisted && sourceCachePersisted ? "success" : "warn"
+        );
+      }
+
+      return {
+        ok: true,
+        payload,
+        syncRun
+      };
+    } catch (error) {
+      store.update((draft) => {
+        prependSourceSyncRun(draft, buildBdnsFailureRun(error, { pages, pageSize }));
+      }, makeAudit("BDNS sync failed", error?.message ?? "Unknown BDNS sync error."));
+      await persistBdnsConnectorState({
+        lastRunMode: "manual",
+        lastErrorAt: new Date().toISOString(),
+        lastErrorCode: error?.code ?? "bdns_sync_failed"
+      });
+      if (showMessage) setMessage(error?.message ?? "BDNS sync failed.", "error");
+      throw error;
+    } finally {
+      bdnsSyncActive = false;
+      uiState.bdnsSyncing = false;
+      render();
+    }
+  }
+
   const refreshScheduler =
     services.refreshScheduler ??
     (
@@ -3200,7 +3617,9 @@ export function startApp(root, { runtime, store, services = {} }) {
   render();
   const sourceCacheReady = Promise.all([
     hydratePlacspConnectorState(),
-    hydratePlacspSourceCache()
+    hydratePlacspSourceCache(),
+    hydrateBdnsConnectorState(),
+    hydrateBdnsSourceCache()
   ])
     .catch((error) => {
       sourceCacheStatus = {
@@ -3212,7 +3631,7 @@ export function startApp(root, { runtime, store, services = {} }) {
           code: "SOURCE_CACHE_LOAD_FAILED",
           message: error instanceof Error ? error.message : String(error),
           operation: "load",
-          connector: "placsp",
+          connector: "official_connectors",
           at: new Date().toISOString()
         }
       };
@@ -3297,6 +3716,18 @@ export function startApp(root, { runtime, store, services = {} }) {
           requestMode: "reconcile",
           runMode: "reconcile",
           maxPages: uiState.placspMaxPages
+        });
+      } catch {
+        // The shared sync executor already recorded state, warnings, and UI feedback.
+      }
+      return;
+    }
+
+    if (action === "sync-bdns") {
+      try {
+        await performBdnsSync({
+          pages: uiState.bdnsMaxPages,
+          pageSize: uiState.bdnsPageSize
         });
       } catch {
         // The shared sync executor already recorded state, warnings, and UI feedback.
@@ -3450,6 +3881,16 @@ export function startApp(root, { runtime, store, services = {} }) {
     }
     if (element?.dataset?.control === "placsp-pages") {
       uiState.placspMaxPages = normalizePlacspMaxPages(element.value);
+      render();
+      return;
+    }
+    if (element?.dataset?.control === "bdns-pages") {
+      uiState.bdnsMaxPages = normalizeBdnsMaxPages(element.value);
+      render();
+      return;
+    }
+    if (element?.dataset?.control === "bdns-page-size") {
+      uiState.bdnsPageSize = normalizeBdnsPageSize(element.value);
       render();
       return;
     }

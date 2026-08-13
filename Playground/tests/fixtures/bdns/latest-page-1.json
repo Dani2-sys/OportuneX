@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "codigoBDNS": "700001",
+      "numeroConvocatoria": "700001",
+      "descripcion": "Ayudas a PYMES para modernizacion de instalaciones electricas",
+      "fechaRecepcion": "2026-07-20",
+      "organo": { "nivel1": "Generalitat de Catalunya", "nivel3": "Direccio General d'Industria" }
+    },
+    {
+      "codigoBDNS": "700002",
+      "numeroConvocatoria": "700002",
+      "descripcion": "Subvenciones para equipos de climatizacion eficiente",
+      "fechaRecepcion": "2026-07-25",
+      "organo": { "nivel1": "Generalitat de Catalunya", "nivel3": "Institut Catala d'Energia" }
+    },
+    {
+      "codigoBDNS": "700002",
+      "numeroConvocatoria": "700002",
+      "descripcion": "Subvenciones para equipos de climatizacion eficiente",
+      "fechaRecepcion": "2026-07-25",
+      "organo": { "nivel1": "Generalitat de Catalunya", "nivel3": "Institut Catala d'Energia" }
+    }
+  ]
+}

@@ -310,7 +310,7 @@ test("automatic PLACSP refresh waits for hydration, records automatic timestamps
     const payload = await syncPayload("open-tender.atom.xml", "2026-08-13T10:00:00.000Z");
     const store = createStore({ storageAdapter: createMockStorageAdapter() });
     const root = createRoot();
-    let resolveLoad;
+    const loadResolvers = [];
     const syncCalls = [];
     let aiCalls = 0;
     let connectorState = createConnectorState("placsp", {
@@ -325,7 +325,7 @@ test("automatic PLACSP refresh waits for hydration, records automatic timestamps
         kind: "memory_test",
         async loadByConnector() {
           await new Promise((resolve) => {
-            resolveLoad = resolve;
+            loadResolvers.push(resolve);
           });
           return {
             ok: true,
@@ -384,7 +384,7 @@ test("automatic PLACSP refresh waits for hydration, records automatic timestamps
     await nextTick();
     assert.equal(syncCalls.length, 0);
 
-    resolveLoad();
+    loadResolvers.splice(0).forEach((resolve) => resolve());
     await nextTick();
     await nextTick();
 

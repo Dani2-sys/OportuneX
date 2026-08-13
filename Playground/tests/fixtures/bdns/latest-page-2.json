@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "codigoBDNS": "700003",
+      "numeroConvocatoria": "700003",
+      "descripcion": "Ayudas cerradas para renovacion de alumbrado",
+      "fechaRecepcion": "2026-05-10",
+      "organo": { "nivel1": "Ajuntament de Reus" }
+    },
+    {
+      "codigoBDNS": "700006",
+      "numeroConvocatoria": "700006",
+      "descripcion": "Ayudas con cierre descrito solo en texto",
+      "fechaRecepcion": "2026-08-03",
+      "organo": { "nivel1": "Diputacion de Tarragona" }
+    }
+  ]
+}

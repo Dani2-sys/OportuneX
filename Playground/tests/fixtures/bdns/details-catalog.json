@@ -1,0 +1,306 @@
+{
+  "normalSmeGrant": {
+    "codigoBDNS": "700001",
+    "numeroConvocatoria": "700001",
+    "descripcion": "Ayudas a PYMES para modernizacion de instalaciones electricas",
+    "descripcionLeng": "",
+    "fechaRecepcion": "2026-07-20",
+    "fechaInicioSolicitud": "2026-07-21",
+    "fechaFinSolicitud": "2026-09-15",
+    "textInicio": "",
+    "textFin": "",
+    "abierto": false,
+    "sedeElectronica": "https://sede.example.gob.es/grants/700001",
+    "tipoConvocatoria": "Concurrencia competitiva",
+    "mrr": false,
+    "descripcionFinalidad": "Apoyar la mejora tecnologica de pequenas y medianas empresas instaladoras.",
+    "presupuestoTotal": "1000000",
+    "tiposBeneficiarios": [
+      { "descripcion": "PYME" }
+    ],
+    "sectores": [
+      { "codigo": "4321", "descripcion": "Electrical installation" }
+    ],
+    "regiones": [
+      { "codigo": "ES51", "descripcion": "Catalonia" }
+    ],
+    "descripcionBasesReguladoras": "Bases reguladoras de la linea de ayudas para modernizacion.",
+    "urlBasesReguladoras": "https://boe.example/700001-bases",
+    "documentos": [
+      {
+        "id": "doc-700001-a",
+        "nombreFic": "convocatoria.pdf",
+        "descripcion": "Texto de la convocatoria",
+        "long": "102400",
+        "datMod": "2026-07-20",
+        "datPublicacion": "2026-07-20"
+      }
+    ],
+    "anuncios": [
+      {
+        "numAnuncio": "A-700001",
+        "titulo": "Extracto de convocatoria",
+        "tituloLeng": "",
+        "url": "https://boe.example/anuncio/700001",
+        "cve": "BOE-A-2026-700001",
+        "desDiarioOficial": "BOE",
+        "datPublicacion": "2026-07-20"
+      }
+    ],
+    "organo": {
+      "nivel1": "Generalitat de Catalunya",
+      "nivel2": "Departament d'Empresa i Treball",
+      "nivel3": "Direccio General d'Industria"
+    }
+  },
+  "fixedWindow": {
+    "codigoBDNS": "700002",
+    "numeroConvocatoria": "700002",
+    "descripcion": "Subvenciones para equipos de climatizacion eficiente",
+    "fechaRecepcion": "2026-07-25",
+    "fechaInicioSolicitud": "2026-08-01",
+    "fechaFinSolicitud": "2026-10-01",
+    "abierto": false,
+    "sedeElectronica": "https://sede.example.gob.es/grants/700002",
+    "tipoConvocatoria": "Concurrencia competitiva",
+    "descripcionFinalidad": "Favorecer la renovacion eficiente de equipos.",
+    "presupuestoTotal": "2500000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "regiones": [{ "descripcion": "Catalonia" }],
+    "organo": { "nivel1": "Generalitat de Catalunya", "nivel3": "Institut Catala d'Energia" }
+  },
+  "expiredWindow": {
+    "codigoBDNS": "700003",
+    "numeroConvocatoria": "700003",
+    "descripcion": "Ayudas cerradas para renovacion de alumbrado",
+    "fechaRecepcion": "2026-05-10",
+    "fechaInicioSolicitud": "2026-05-15",
+    "fechaFinSolicitud": "2026-07-01",
+    "abierto": false,
+    "presupuestoTotal": "500000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "organo": { "nivel1": "Ajuntament de Reus" }
+  },
+  "indefiniteOpen": {
+    "codigoBDNS": "700004",
+    "numeroConvocatoria": "700004",
+    "descripcion": "Linea abierta de ayudas para autoconsumo industrial",
+    "fechaRecepcion": "2026-07-01",
+    "abierto": true,
+    "textFin": "Abierto hasta agotamiento del credito",
+    "sedeElectronica": "https://sede.example.gob.es/grants/700004",
+    "presupuestoTotal": "9000000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "regiones": [{ "descripcion": "Spain" }],
+    "organo": { "nivel1": "Ministerio de Industria" }
+  },
+  "futureDeadlineAbiertoFalse": {
+    "codigoBDNS": "700005",
+    "numeroConvocatoria": "700005",
+    "descripcion": "Convocatoria con abierto=false pero cierre futuro",
+    "fechaRecepcion": "2026-08-05",
+    "fechaFinSolicitud": "2026-12-31",
+    "abierto": false,
+    "presupuestoTotal": "1500000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "organo": { "nivel1": "Comunidad Autonoma de Aragon" }
+  },
+  "descriptiveTextFin": {
+    "codigoBDNS": "700006",
+    "numeroConvocatoria": "700006",
+    "descripcion": "Ayudas con cierre descrito solo en texto",
+    "fechaRecepcion": "2026-08-03",
+    "abierto": false,
+    "textFin": "Hasta el agotamiento del credito disponible",
+    "presupuestoTotal": "300000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "organo": { "nivel1": "Diputacion de Tarragona" }
+  },
+  "programmeBudgetOnly": {
+    "codigoBDNS": "700007",
+    "numeroConvocatoria": "700007",
+    "descripcion": "Programa de ayudas sin importe maximo por beneficiario estructurado",
+    "fechaRecepcion": "2026-08-10",
+    "fechaFinSolicitud": "2026-11-01",
+    "abierto": false,
+    "presupuestoTotal": "10000000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "organo": { "nivel1": "Junta de Andalucia" }
+  },
+  "multipleBeneficiaryTypes": {
+    "codigoBDNS": "700008",
+    "numeroConvocatoria": "700008",
+    "descripcion": "Programa con categorias de beneficiarios alternativas",
+    "fechaRecepcion": "2026-08-08",
+    "fechaFinSolicitud": "2026-09-30",
+    "abierto": false,
+    "presupuestoTotal": "1250000",
+    "tiposBeneficiarios": [
+      { "descripcion": "PYME Y PERSONAS FISICAS QUE DESARROLLAN ACTIVIDAD ECONOMICA" },
+      { "descripcion": "COOPERATIVAS" }
+    ],
+    "organo": { "nivel1": "Generalitat Valenciana" }
+  },
+  "multipleImpactRegions": {
+    "codigoBDNS": "700009",
+    "numeroConvocatoria": "700009",
+    "descripcion": "Programa multi-region de impacto",
+    "fechaRecepcion": "2026-08-02",
+    "fechaFinSolicitud": "2026-10-15",
+    "abierto": false,
+    "presupuestoTotal": "2200000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "regiones": [
+      { "codigo": "ES51", "descripcion": "Catalonia" },
+      { "codigo": "ES52", "descripcion": "Valencian Community" }
+    ],
+    "organo": { "nivel1": "Ministerio para la Transicion Ecologica" }
+  },
+  "sectorCoded": {
+    "codigoBDNS": "700010",
+    "numeroConvocatoria": "700010",
+    "descripcion": "Ayudas sectoriales para eficiencia industrial",
+    "fechaRecepcion": "2026-08-04",
+    "fechaFinSolicitud": "2026-11-30",
+    "abierto": false,
+    "presupuestoTotal": "4200000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "sectores": [
+      { "codigo": "4321", "descripcion": "Electrical installation" },
+      { "codigo": "4322", "descripcion": "Plumbing, heat and air-conditioning installation" }
+    ],
+    "organo": { "nivel1": "Ministerio de Industria" }
+  },
+  "stateAidEuFunds": {
+    "codigoBDNS": "700011",
+    "numeroConvocatoria": "700011",
+    "descripcion": "Ayudas con metadatos de ayuda de Estado y fondos UE",
+    "fechaRecepcion": "2026-07-28",
+    "fechaFinSolicitud": "2026-09-22",
+    "abierto": false,
+    "presupuestoTotal": "7500000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "ayudaEstado": "Regimen de ayudas SA.700011",
+    "urlAyudaEstado": "https://competition.example/sa700011",
+    "fondos": ["FEDER", "NextGenerationEU"],
+    "reglamento": ["Reglamento (UE) 651/2014"],
+    "objetivos": ["Descarbonizacion", "Digitalizacion"],
+    "organo": { "nivel1": "Generalitat de Catalunya", "nivel3": "ACCIO" }
+  },
+  "announcementsRich": {
+    "codigoBDNS": "700012",
+    "numeroConvocatoria": "700012",
+    "descripcion": "Convocatoria con varios anuncios oficiales",
+    "fechaRecepcion": "2026-08-01",
+    "fechaFinSolicitud": "2026-10-20",
+    "abierto": false,
+    "presupuestoTotal": "950000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "anuncios": [
+      {
+        "numAnuncio": "B-700012-1",
+        "titulo": "Extracto inicial",
+        "url": "https://boe.example/anuncio/700012-inicial",
+        "cve": "BOE-B-700012-1",
+        "desDiarioOficial": "BOE",
+        "datPublicacion": "2026-08-01"
+      },
+      {
+        "numAnuncio": "B-700012-2",
+        "titulo": "Correccion de errores",
+        "url": "https://boe.example/anuncio/700012-correccion",
+        "cve": "BOE-B-700012-2",
+        "desDiarioOficial": "BOE",
+        "datPublicacion": "2026-08-05"
+      }
+    ],
+    "organo": { "nivel1": "Ayuntamiento de Barcelona" }
+  },
+  "documentsRich": {
+    "codigoBDNS": "700013",
+    "numeroConvocatoria": "700013",
+    "descripcion": "Convocatoria con varios documentos oficiales",
+    "fechaRecepcion": "2026-08-06",
+    "fechaFinSolicitud": "2026-10-31",
+    "abierto": false,
+    "presupuestoTotal": "600000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "documentos": [
+      {
+        "id": "doc-700013-a",
+        "nombreFic": "bases.pdf",
+        "descripcion": "Bases reguladoras",
+        "long": "120034",
+        "datMod": "2026-08-05",
+        "datPublicacion": "2026-08-06"
+      },
+      {
+        "id": "doc-700013-b",
+        "nombreFic": "faq.pdf",
+        "descripcion": "Preguntas frecuentes",
+        "long": "65000",
+        "datMod": "2026-08-06",
+        "datPublicacion": "2026-08-06"
+      }
+    ],
+    "organo": { "nivel1": "Cabildo de Tenerife" }
+  },
+  "explicitAnulada": {
+    "codigoBDNS": "700014",
+    "numeroConvocatoria": "700014",
+    "descripcion": "ANULADA: Convocatoria de ayudas para renovacion de cubiertas",
+    "fechaRecepcion": "2026-08-07",
+    "fechaFinSolicitud": "2026-09-07",
+    "abierto": false,
+    "presupuestoTotal": "850000",
+    "tiposBeneficiarios": [{ "descripcion": "PYME" }],
+    "organo": { "nivel1": "Diputacion de Girona" }
+  },
+  "sparseIncomplete": {
+    "codigoBDNS": "700015",
+    "numeroConvocatoria": "700015",
+    "descripcion": "Convocatoria escasa",
+    "fechaRecepcion": "2026-08-09",
+    "organo": { "nivel1": "Entidad local menor" }
+  },
+  "correctedSemantics": {
+    "codigoBDNS": "700001",
+    "numeroConvocatoria": "700001",
+    "descripcion": "Ayudas a PYMES para modernizacion y digitalizacion de instalaciones electricas",
+    "descripcionLeng": "",
+    "fechaRecepcion": "2026-07-20",
+    "fechaInicioSolicitud": "2026-07-21",
+    "fechaFinSolicitud": "2026-09-20",
+    "abierto": false,
+    "sedeElectronica": "https://sede.example.gob.es/grants/700001",
+    "tipoConvocatoria": "Concurrencia competitiva",
+    "descripcionFinalidad": "Apoyar la modernizacion y digitalizacion de pequenas y medianas empresas instaladoras.",
+    "presupuestoTotal": "1250000",
+    "tiposBeneficiarios": [
+      { "descripcion": "PYME" }
+    ],
+    "sectores": [
+      { "codigo": "4321", "descripcion": "Electrical installation" }
+    ],
+    "regiones": [
+      { "codigo": "ES51", "descripcion": "Catalonia" }
+    ],
+    "descripcionBasesReguladoras": "Bases reguladoras corregidas.",
+    "urlBasesReguladoras": "https://boe.example/700001-bases-v2",
+    "anuncios": [
+      {
+        "numAnuncio": "A-700001-2",
+        "titulo": "Extracto corregido",
+        "url": "https://boe.example/anuncio/700001-v2",
+        "cve": "BOE-A-2026-700001-2",
+        "desDiarioOficial": "BOE",
+        "datPublicacion": "2026-08-02"
+      }
+    ],
+    "organo": {
+      "nivel1": "Generalitat de Catalunya",
+      "nivel2": "Departament d'Empresa i Treball",
+      "nivel3": "Direccio General d'Industria"
+    }
+  }
+}

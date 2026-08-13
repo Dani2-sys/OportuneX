@@ -56,6 +56,71 @@ function makeContractOpportunity({ id, title, estimatedMajor, relevantMajor = nu
   };
 }
 
+function makeProgrammeBudgetOnlyGrant() {
+  return {
+    id: "bdns-programme-budget-only",
+    sourceConnector: "bdns",
+    sourceOpportunityId: "700007",
+    sourceNoticeVersionId: "bdns-version:programme-budget-only",
+    type: "grant",
+    noticeType: "grant_call",
+    status: "open",
+    title: "Programme budget only grant",
+    description: "Grant without a structured maximum aid per beneficiary.",
+    publicationDate: "2026-08-10",
+    deadline: parseSpanishDate("01/11/2026 23:59"),
+    location: {
+      municipality: "",
+      province: "",
+      autonomousCommunity: "Andalusia",
+      display: "Andalusia"
+    },
+    cpvCodes: [],
+    keywords: ["grant"],
+    relevantValue: null,
+    estimatedValue: null,
+    awardValue: null,
+    baseBudget: null,
+    wholeProcedureValue: null,
+    annualValue: null,
+    multiYearValue: null,
+    maximumAidPerBeneficiary: null,
+    programmeBudget: createMoney({
+      major: 10000000,
+      currency: "EUR",
+      amountType: "programme_budget",
+      vatStatus: "unknown",
+      source: "official_snpsap_api"
+    }),
+    eligibleProjectCost: null,
+    aidIntensity: "",
+    duration: "",
+    guarantees: "",
+    submissionMechanism: "Official electronic application site",
+    applicationUrl: "https://sede.example.gob.es/grants/700007",
+    noticeUrl: "https://www.infosubvenciones.es/bdnstrans/GE/es/convocatorias/700007",
+    referenceNumber: "700007",
+    contacts: [],
+    sources: [
+      {
+        id: "grant-source-700007",
+        organisation: "Sistema Nacional de Publicidad de Subvenciones y Ayudas Publicas",
+        title: "Official BDNS API",
+        url: "https://www.infosubvenciones.es/bdnstrans/api/convocatorias?numConv=700007&vpd=GE",
+        official: true
+      }
+    ],
+    evidence: [],
+    requirements: [],
+    requiredDocuments: [],
+    documents: [],
+    sourceConflicts: [],
+    availabilityWarnings: [],
+    lots: [],
+    cancellationStatus: null
+  };
+}
+
 test("prefers relevant lot value over full procedure value", () => {
   const runtime = getRuntimeConfig();
   const state = createDemoState();
@@ -71,6 +136,17 @@ test("does not present programme budget as company amount", () => {
   const grant = portfolio.recommended.find((item) => item.opportunityId === "opp-efficiency-grant");
   assert.ok(grant.companyAmountLabel.includes("€40,000"));
   assert.ok(!grant.companyAmountLabel.includes("10,000,000"));
+});
+
+test("programme-budget-only grants keep programme budget wording and never present it as company amount", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const result = analyzeOpportunity(state.companyProfiles[0], makeProgrammeBudgetOnlyGrant(), runtime, getEvaluationNow());
+
+  assert.equal(result.bestMatch.financialPicture?.primaryLine?.label, "Programme budget");
+  assert.match(result.bestMatch.reportMarkdown, /- Programme budget: €10,000,000/);
+  assert.doesNotMatch(result.bestMatch.reportMarkdown, /Maximum aid per beneficiary: €10,000,000/);
+  assert.doesNotMatch(result.bestMatch.companyAmountLabel, /10,000,000/);
 });
 
 test("demo portfolio keeps mutually exclusive opportunity scopes transparent", () => {

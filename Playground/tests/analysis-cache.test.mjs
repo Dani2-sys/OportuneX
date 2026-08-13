@@ -140,6 +140,53 @@ test("analysis cache reuses same-minute and different-minute same-hour portfolio
   assert.equal(analyzeCalls, 4);
 });
 
+test("analysis cache isolates PLACSP and BDNS source-version invalidation", () => {
+  const company = baseCompany();
+  const opportunities = [
+    makeOpportunity(1, {
+      id: "placsp-cache-opportunity",
+      sourceConnector: "placsp",
+      sourceOpportunityId: "https://contrataciondelestado.es/sindicacion/placsp-cache-opportunity",
+      sourceNoticeVersionId: "placsp-version:stable"
+    }),
+    makeOpportunity(2, {
+      id: "bdns-cache-opportunity",
+      sourceConnector: "bdns",
+      sourceOpportunityId: "700001",
+      sourceNoticeVersionId: "bdns-version:stable",
+      sources: [
+        {
+          id: "analysis-source-bdns-2",
+          organisation: "Sistema Nacional de Publicidad de Subvenciones y Ayudas Publicas",
+          title: "Official BDNS API",
+          url: "https://www.infosubvenciones.es/bdnstrans/api/convocatorias?numConv=700001&vpd=GE",
+          official: true,
+          metadata: {
+            sourceType: "official_snpsap_api"
+          }
+        }
+      ]
+    })
+  ];
+  const cache = createAnalysisCache();
+
+  cache.analyzePortfolio(company, opportunities, DEFAULT_RUNTIME, FIXED_NOW);
+
+  const bdnsUpdatedOnly = [
+    opportunities[0],
+    {
+      ...opportunities[1],
+      sourceNoticeVersionId: "bdns-version:changed"
+    }
+  ];
+  cache.analyzePortfolio(company, bdnsUpdatedOnly, DEFAULT_RUNTIME, FIXED_NOW);
+  const metrics = cache.getMetrics();
+
+  assert.equal(metrics.lastRunHits, 1);
+  assert.equal(metrics.lastRunMisses, 1);
+  assert.deepEqual(metrics.lastRecomputedOpportunityIds, ["bdns-cache-opportunity"]);
+});
+
 test("analysis cache invalidates on absolute-hour and Madrid-date transitions", () => {
   const company = baseCompany();
   const opportunities = [makeOpportunity(1), makeOpportunity(2)];

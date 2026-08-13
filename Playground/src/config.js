@@ -29,7 +29,7 @@ export const DEFAULT_RUNTIME = {
   },
   connectors: {
     placsp: "ready",
-    bdns: "planned",
+    bdns: "ready",
     ted: "planned"
   },
   verification: {

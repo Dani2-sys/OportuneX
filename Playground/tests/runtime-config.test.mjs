@@ -60,6 +60,16 @@ test("browser runtime config never contains the API key", () => {
   assert.ok(browserConfig.includes('"verificationModel": "gpt-5.6-terra"'));
 });
 
+test("runtime config exposes implemented connector readiness consistently", () => {
+  const runtimeConfig = createRuntimeConfig({});
+
+  assert.deepEqual(runtimeConfig.connectors, {
+    placsp: "ready",
+    bdns: "ready",
+    ted: "planned"
+  });
+});
+
 test("AI verifier request uses configured server-side model and strict structured output", () => {
   const runtimeConfig = createRuntimeConfig({
     OPENAI_API_KEY: "sk-test-server-key-1234567890",

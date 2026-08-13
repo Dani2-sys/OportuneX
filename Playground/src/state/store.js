@@ -1,7 +1,7 @@
 import { clone } from "../utils.js";
 import { createDemoState } from "../data/demo.js";
 import { normalizeAiRun } from "../domain/ai-review.js";
-import { isPlacspSourceOpportunity } from "../services/source-opportunity-cache.js";
+import { isSourceOpportunity } from "../services/source-opportunity-cache.js";
 
 const STORAGE_KEY = "oportunex.phase0.store.v1";
 const PERSISTENCE_AVAILABLE_DETAIL = "Browser-local persistence is active.";
@@ -491,7 +491,7 @@ export function loadState(storageAdapter = createLocalStorageAdapter()) {
 
 export function serializeStateForPersistence(state) {
   const snapshot = normalizeState(state);
-  snapshot.opportunities = snapshot.opportunities.filter((item) => !isPlacspSourceOpportunity(item));
+  snapshot.opportunities = snapshot.opportunities.filter((item) => !isSourceOpportunity(item));
   snapshot.auditEvents = snapshot.auditEvents.slice(0, AUDIT_EVENT_RETENTION);
   snapshot.sourceSyncRuns = snapshot.sourceSyncRuns.slice(0, SOURCE_SYNC_RUN_RETENTION);
   return snapshot;

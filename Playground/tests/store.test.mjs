@@ -63,6 +63,73 @@ function makePlacspOpportunity(index, overrides = {}) {
   };
 }
 
+function makeBdnsOpportunity(index, overrides = {}) {
+  const id = overrides.id ?? `bdns:test-${index}`;
+  return {
+    id,
+    sourceConnector: "bdns",
+    sourceOpportunityId: overrides.sourceOpportunityId ?? `7000${index}`,
+    sourceNoticeVersionId: overrides.sourceNoticeVersionId ?? `bdns-version:${index}`,
+    type: "grant",
+    noticeType: "grant_call",
+    status: "open",
+    title: overrides.title ?? `BDNS test opportunity ${index}`,
+    description: "Synthetic BDNS source-backed opportunity for persistence tests.",
+    location: {
+      display: "Catalonia"
+    },
+    cpvCodes: [],
+    keywords: ["grant"],
+    estimatedValue: null,
+    awardValue: null,
+    baseBudget: null,
+    relevantValue: null,
+    wholeProcedureValue: null,
+    annualValue: null,
+    multiYearValue: null,
+    maximumAidPerBeneficiary: null,
+    programmeBudget: {
+      amountMinor: 10000000,
+      currency: "EUR",
+      vatStatus: "unknown",
+      amountType: "programme_budget",
+      source: "official_snpsap_api",
+      label: "",
+      original: "100000"
+    },
+    eligibleProjectCost: null,
+    aidIntensity: "",
+    duration: "",
+    guarantees: "",
+    submissionMechanism: "Official electronic application site",
+    applicationUrl: "https://sede.example.gob.es/grants/test",
+    noticeUrl: "https://www.infosubvenciones.es/bdnstrans/GE/es/convocatorias?numConv=700001",
+    referenceNumber: `BDNS-${index}`,
+    requiredDocuments: [],
+    documents: ["Convocatoria"],
+    contacts: [],
+    sources: [
+      {
+        id: `src-bdns-${index}`,
+        organisation: "Intervencion General de la Administracion del Estado",
+        title: "Sistema Nacional de Publicidad de Subvenciones y Ayudas Publicas API",
+        url: "https://www.infosubvenciones.es/bdnstrans/api/convocatorias?numConv=700001&vpd=GE",
+        official: true,
+        metadata: {
+          sourceType: "official_snpsap_api"
+        }
+      }
+    ],
+    evidence: [],
+    requirements: [],
+    lots: [],
+    sourceConflicts: [],
+    availabilityWarnings: [],
+    cancellationStatus: null,
+    ...overrides
+  };
+}
+
 const MINIMAL_PROSPECT_JSON = JSON.stringify({
   id: "company-test-import",
   profileMode: "prospect",
@@ -205,10 +272,11 @@ test("store normalizes sparse prospect profiles loaded from persistence", () => 
   assert.deepEqual(store.getState().opportunities, []);
 });
 
-test("large PLACSP corpora stay out of localStorage while saved source ids remain persisted", () => {
+test("manual opportunities persist locally while PLACSP and BDNS source records stay out of localStorage", () => {
   const storageAdapter = createMockStorageAdapter();
   const store = createStore({ storageAdapter });
-  const sourceOpportunities = Array.from({ length: 1000 }, (_, index) => makePlacspOpportunity(index + 1));
+  const placspOpportunity = makePlacspOpportunity(1);
+  const bdnsOpportunity = makeBdnsOpportunity(1);
   const manualOpportunity = {
     ...makePlacspOpportunity("manual-keep", {
       sourceConnector: null,
@@ -229,8 +297,8 @@ test("large PLACSP corpora stay out of localStorage while saved source ids remai
 
   store.replace({
     ...store.getState(),
-    opportunities: [...sourceOpportunities, manualOpportunity],
-    savedOpportunityIds: [sourceOpportunities[0].id, "manual-opportunity"]
+    opportunities: [placspOpportunity, bdnsOpportunity, manualOpportunity],
+    savedOpportunityIds: [placspOpportunity.id, bdnsOpportunity.id, "manual-opportunity"]
   });
 
   const raw = storageAdapter.readRaw();
@@ -238,6 +306,45 @@ test("large PLACSP corpora stay out of localStorage while saved source ids remai
 
   assert.equal(parsed.opportunities.length, 1);
   assert.equal(parsed.opportunities[0].id, "manual-opportunity");
-  assert.deepEqual(parsed.savedOpportunityIds, [sourceOpportunities[0].id, "manual-opportunity"]);
-  assert.doesNotMatch(raw, /PLACSP test opportunity 1000/);
+  assert.deepEqual(parsed.savedOpportunityIds, [placspOpportunity.id, bdnsOpportunity.id, "manual-opportunity"]);
+  assert.doesNotMatch(raw, /PLACSP test opportunity 1/);
+  assert.doesNotMatch(raw, /BDNS test opportunity 1/);
+});
+
+test("1,000 fake BDNS opportunities do not bloat localStorage serialization", () => {
+  const storageAdapter = createMockStorageAdapter();
+  const store = createStore({ storageAdapter });
+  const manualOpportunity = {
+    ...makePlacspOpportunity("manual-keep", {
+      sourceConnector: null,
+      id: "manual-opportunity",
+      title: "Manual opportunity"
+    }),
+    sourceOpportunityId: "manual-opportunity",
+    sourceNoticeVersionId: "manual-opportunity-version",
+    sources: [
+      {
+        id: "src-manual-opportunity",
+        organisation: "Manual import",
+        title: "Manual structured import",
+        url: "https://example.com/manual"
+      }
+    ]
+  };
+  const bdnsOpportunities = Array.from({ length: 1000 }, (_, index) => makeBdnsOpportunity(index + 1));
+
+  store.replace({
+    ...store.getState(),
+    opportunities: [...bdnsOpportunities, manualOpportunity],
+    savedOpportunityIds: [bdnsOpportunities[0].id, bdnsOpportunities[999].id, manualOpportunity.id]
+  });
+
+  const raw = storageAdapter.readRaw();
+  const parsed = JSON.parse(raw);
+
+  assert.equal(parsed.opportunities.length, 1);
+  assert.equal(parsed.opportunities[0].id, manualOpportunity.id);
+  assert.deepEqual(parsed.savedOpportunityIds, [bdnsOpportunities[0].id, bdnsOpportunities[999].id, manualOpportunity.id]);
+  assert.doesNotMatch(raw, /BDNS test opportunity 1/);
+  assert.doesNotMatch(raw, /BDNS test opportunity 1000/);
 });

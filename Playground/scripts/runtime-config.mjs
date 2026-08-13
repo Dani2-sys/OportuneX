@@ -120,7 +120,7 @@ export function createRuntimeConfig(env = process.env) {
     },
     connectors: {
       placsp: "ready",
-      bdns: "planned",
+      bdns: "ready",
       ted: "planned"
     },
     verification: {

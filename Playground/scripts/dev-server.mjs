@@ -15,6 +15,7 @@ import {
   extractResponseText,
   validateVerificationResult
 } from "./openai-verification.mjs";
+import { BdnsSyncError, syncBdnsCalls } from "./connectors/bdns-client.mjs";
 import { PlacspSyncError, syncPlacspFeed } from "./connectors/placsp-client.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -371,6 +372,40 @@ async function handleApi(request, response) {
           code: placspError.code,
           message: placspError.message,
           adminMessage: placspError.adminMessage
+        }
+      });
+    }
+  }
+
+  if (request.url === "/api/connectors/bdns/sync" && request.method === "POST") {
+    let payload;
+    try {
+      payload = await readJsonBody(request);
+    } catch (error) {
+      return sendJson(response, error.statusCode ?? 400, buildErrorResponse(error));
+    }
+
+    try {
+      const result = await syncBdnsCalls({
+        pages: payload?.pages,
+        pageSize: payload?.pageSize
+      });
+      return sendJson(response, 200, result);
+    } catch (error) {
+      const bdnsError =
+        error instanceof BdnsSyncError
+          ? error
+          : new BdnsSyncError(
+              500,
+              "bdns_sync_failed",
+              "BDNS synchronization failed unexpectedly.",
+              error.message ?? "Unexpected BDNS sync failure."
+            );
+      return sendJson(response, bdnsError.statusCode ?? 500, {
+        error: {
+          code: bdnsError.code,
+          message: bdnsError.message,
+          adminMessage: bdnsError.adminMessage
         }
       });
     }
