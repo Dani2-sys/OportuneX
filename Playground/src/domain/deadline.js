@@ -41,7 +41,8 @@ export function parseSpanishDate(text = "") {
     date: `${year}-${month}-${day}`,
     time: hour != null ? `${hour.padStart(2, "0")}:${minute}` : null,
     timezone: SPANISH_TIME_ZONE,
-    sourceTimezone: SPANISH_TIME_ZONE,
+    // The source text provides a local date/time but not an explicit zone.
+    sourceTimezone: null,
     utcEquivalent: hour != null ? toUtcIso(`${year}-${month}-${day}`, `${hour.padStart(2, "0")}:${minute}`) : null
   };
 }

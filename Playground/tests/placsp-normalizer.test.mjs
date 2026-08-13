@@ -53,6 +53,8 @@ test("PLACSP normalization uses TenderSubmissionDeadlinePeriod and keeps officia
   assert.deepEqual(opportunity.cpvCodes, ["50711000", "45315300"]);
   assert.equal(opportunity.deadline.date, "2026-08-29");
   assert.equal(opportunity.deadline.time, "14:00");
+  assert.equal(opportunity.deadline.timezone, "Europe/Madrid");
+  assert.equal(opportunity.deadline.sourceTimezone, null);
   assert.doesNotMatch(opportunity.deadline.sourceText, /20\/08\/2026/);
   assert.equal(opportunity.estimatedValue.amountMinor, 21000000);
   assert.equal(opportunity.baseBudget.amountMinor, 19800000);
@@ -120,6 +122,8 @@ test("multi-lot PLACSP records preserve lot-level base budget semantics without 
   assert.equal(firstLot.value.amountType, "base_budget");
   assert.equal(opportunity.deadline.date, "2026-08-26");
   assert.equal(opportunity.deadline.time, null);
+  assert.equal(opportunity.deadline.timezone, "Europe/Madrid");
+  assert.equal(opportunity.deadline.sourceTimezone, null);
   assert.equal(financialPicture.primaryLine.label, "Lot 1 low-voltage maintenance base / tender budget");
   assert.doesNotMatch(financialPicture.primaryLine.label, /Relevant lot/i);
 });

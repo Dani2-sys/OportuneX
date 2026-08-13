@@ -2,9 +2,11 @@ import {
   ACTION_COPY,
   APP_TITLE,
   CONFIDENCE_COPY,
+  DEFAULT_SEARCH_PLAN_ID,
   ELIGIBILITY_COPY,
   FEEDBACK_LABELS,
   FIT_BAND_COPY,
+  getSearchDepthPolicy,
   NAV_ITEMS,
   OPPORTUNITY_TYPES,
   RECOMMENDATION_COPY,
@@ -66,6 +68,7 @@ import {
 } from "./services/connector-refresh-scheduler.js";
 import { createAnalysisCache } from "./services/analysis-cache.js";
 import { runAiVerification } from "./services/ai-client.js";
+import { buildCandidateFunnel } from "./services/candidate-funnel.js";
 import { serializeStateForPersistence } from "./state/store.js";
 import { clamp, clone, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
 
@@ -73,7 +76,7 @@ const OPPORTUNITY_SCOPES = [
   { id: "worth_attention", label: "Worth your attention" },
   { id: "needs_verification", label: "Needs verification" },
   { id: "not_suitable", label: "Not suitable" },
-  { id: "all_analysed", label: "All analysed" }
+  { id: "all_analysed", label: "All analysed (current depth)" }
 ];
 
 const AI_STATUS_COPY = {
@@ -135,6 +138,7 @@ const UI_STATE_DEFAULTS = {
   draftAnswers: {},
   companyImportDraft: "",
   opportunityJsonDraft: "",
+  analysisDepthByCompanyId: {},
   placspMaxPages: 1,
   placspSyncing: false,
   bdnsMaxPages: 1,
@@ -148,12 +152,18 @@ const UI_STATE_DEFAULTS = {
 
 const uiState = {
   ...UI_STATE_DEFAULTS,
+  analysisDepthByCompanyId: {},
   draftAnswers: {},
   formFeedback: {
     companyImport: null,
     opportunityJsonImport: null
   }
 };
+
+const ACTIVE_SEARCH_POLICY = getSearchDepthPolicy({
+  planId: DEFAULT_SEARCH_PLAN_ID,
+  localDevelopment: true
+});
 
 function getCompany(state) {
   return state.companyProfiles.find((company) => company.id === state.activeCompanyId) ?? state.companyProfiles[0];
@@ -253,6 +263,26 @@ function normalizeBdnsPageSize(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 20;
   return Math.min(50, Math.max(10, Math.round(parsed)));
+}
+
+function getAnalysisDepth(companyId, policy = ACTIVE_SEARCH_POLICY) {
+  const configured = Number(uiState.analysisDepthByCompanyId?.[companyId]);
+  if (!Number.isFinite(configured)) return policy.defaultAnalysis;
+  return clamp(Math.round(configured), policy.defaultAnalysis, policy.maxAnalysis);
+}
+
+function setAnalysisDepth(companyId, depth, policy = ACTIVE_SEARCH_POLICY) {
+  uiState.analysisDepthByCompanyId = {
+    ...(uiState.analysisDepthByCompanyId ?? {}),
+    [companyId]: clamp(Math.round(depth), policy.defaultAnalysis, policy.maxAnalysis)
+  };
+  return uiState.analysisDepthByCompanyId[companyId];
+}
+
+function expandAnalysisDepth(companyId, policy = ACTIVE_SEARCH_POLICY) {
+  const current = getAnalysisDepth(companyId, policy);
+  const next = Math.min(policy.maxAnalysis, current + policy.expansionBatch);
+  return setAnalysisDepth(companyId, next, policy);
 }
 
 function isPlacspSyncRun(run) {
@@ -598,6 +628,7 @@ function buildBdnsFailureRun(error, { pages = 1, pageSize = 20 } = {}) {
 function resetUiState() {
   Object.assign(uiState, {
     ...UI_STATE_DEFAULTS,
+    analysisDepthByCompanyId: {},
     draftAnswers: {},
     formFeedback: {
       companyImport: null,
@@ -699,14 +730,27 @@ function resolveSelectedOpportunityId(currentId, visibleItems, allItems) {
 function getDerived(state, runtime, analysisService = null) {
   const now = getApplicationNow();
   const company = getCompany(state);
+  const analysisDepth = getAnalysisDepth(company.id, ACTIVE_SEARCH_POLICY);
+  const funnel = buildCandidateFunnel({
+    company,
+    opportunities: state.opportunities,
+    now,
+    policy: ACTIVE_SEARCH_POLICY,
+    analysisDepth,
+    savedOpportunityIds: state.savedOpportunityIds,
+    pursuitStatuses: state.pursuitStatuses,
+    selectedOpportunityId: uiState.selectedOpportunityId
+  });
+  const analysisStartedAt = Date.now();
   const portfolio = analysisService?.analyzePortfolio
-    ? analysisService.analyzePortfolio(company, state.opportunities, runtime, now)
-    : analyzePortfolio(company, state.opportunities, runtime, now);
+    ? analysisService.analyzePortfolio(company, funnel.selectedForAnalysis, runtime, now)
+    : analyzePortfolio(company, funnel.selectedForAnalysis, runtime, now);
+  const analysisMs = Date.now() - analysisStartedAt;
   const savedSet = new Set(state.savedOpportunityIds ?? []);
   const scopeItems = getScopeItems(portfolio);
   const scopedItems = scopeItems[uiState.opportunityScope] ?? scopeItems.worth_attention;
 
-  const visibleMatches = scopedItems
+  const filteredMatches = scopedItems
     .filter((item) => (uiState.filterType === "all" ? true : item.opportunity.type === uiState.filterType))
     .filter((item) =>
       uiState.filterRecommendation === "all"
@@ -715,6 +759,7 @@ function getDerived(state, runtime, analysisService = null) {
     )
     .filter((item) => (uiState.showSavedOnly ? savedSet.has(item.opportunityId) : true))
     .sort((left, right) => sortMatches(left, right, uiState.sort));
+  const visibleMatches = filteredMatches.slice(0, funnel.policy.customerSurface);
 
   const selectedOpportunityId = resolveSelectedOpportunityId(
     uiState.selectedOpportunityId,
@@ -755,13 +800,22 @@ function getDerived(state, runtime, analysisService = null) {
     .flatMap((match) => match.adaptiveQuestions.map((question) => ({ ...question, opportunityId: match.opportunityId })))
     .slice(0, 5);
   const evaluation = runEvaluationSuite(evaluationFixtures, runtime, getEvaluationNow());
+  const analysisCacheMetrics = analysisService?.getMetrics?.() ?? null;
+  const funnelDiagnostics = {
+    ...funnel,
+    analysisMs,
+    cacheHits: analysisCacheMetrics?.lastRunHits ?? 0,
+    cacheMisses: analysisCacheMetrics?.lastRunMisses ?? 0
+  };
 
   return {
     now,
     company,
     companies: state.companyProfiles,
     portfolio,
+    funnel: funnelDiagnostics,
     visibleMatches,
+    visibleMatchesTotal: filteredMatches.length,
     savedSet,
     selected,
     selectedRaw,
@@ -773,7 +827,7 @@ function getDerived(state, runtime, analysisService = null) {
     recentAiReviews,
     questions: allQuestions,
     evaluation,
-    analysisCacheMetrics: analysisService?.getMetrics?.() ?? null
+    analysisCacheMetrics
   };
 }
 
@@ -1442,6 +1496,87 @@ function renderOverviewGrid(cards = []) {
   return `<div class="card-grid two ${visibleCards.length === 1 ? "single" : ""}">${visibleCards.join("")}</div>`;
 }
 
+function renderSearchDepthControls(derived, { compact = false } = {}) {
+  const hidden = Math.max(0, derived.visibleMatchesTotal - derived.funnel.policy.customerSurface);
+  const meta = compact
+    ? `Stored universe ${formatNumber(derived.funnel.sourceUniverseCount)} · analysed ${formatNumber(derived.portfolio.counts.analysed)} · current depth ${formatNumber(derived.funnel.analysisDepth)}`
+    : `Stored universe ${formatNumber(derived.funnel.sourceUniverseCount)} · candidate pool ${formatNumber(derived.funnel.candidatePoolCount)} · analysed ${formatNumber(derived.portfolio.counts.analysed)} · current depth ${formatNumber(derived.funnel.analysisDepth)}`;
+  const surfaceNote = compact
+    ? `Customer pages currently prioritise the strongest ${derived.funnel.policy.customerSurface} analysed results while the full stored source universe remains intact.`
+    : hidden > 0
+      ? `Showing ${formatNumber(derived.visibleMatches.length)} of ${formatNumber(derived.visibleMatchesTotal)} results in this view. Search wider expands the analysed pool; customer pages still surface the strongest ${derived.funnel.policy.customerSurface} by default.`
+      : `Showing ${formatNumber(derived.visibleMatches.length)} result${derived.visibleMatches.length === 1 ? "" : "s"} in this view.`;
+
+  return `
+    <div class="detail-section">
+      <div class="action-row">
+        ${
+          derived.funnel.canSearchWider
+            ? `<button class="button-secondary" data-action="search-wider">Search wider</button>`
+            : `<span class="inline-note">Current search depth is at the local development maximum of ${formatNumber(derived.funnel.policy.maxAnalysis)} fully analysed opportunities.</span>`
+        }
+      </div>
+      <p class="form-help">${escapeHtml("OportuneX prioritised the strongest matches for your company. Search wider to include less obvious possibilities.")}</p>
+      <p class="form-help">${escapeHtml(surfaceNote)}</p>
+      <p class="form-help">${escapeHtml(meta)}</p>
+    </div>
+  `;
+}
+
+function renderFunnelDiagnostics(derived) {
+  const connectors = Object.entries(derived.funnel.connectorBreakdown ?? {});
+  return `
+    <article class="card">
+      <div class="section-heading">
+        <h3>Candidate funnel diagnostics</h3>
+        <p>The cheap screen allocates deterministic compute only. Customer scoring still comes from the existing full analysis engine.</p>
+      </div>
+      <div class="card-grid five">
+        ${statCard("Source universe", formatNumber(derived.funnel.sourceUniverseCount))}
+        ${statCard("Safe excluded", formatNumber(derived.funnel.safeExcludedCount))}
+        ${statCard("Candidate pool", formatNumber(derived.funnel.candidatePoolCount))}
+        ${statCard("Analysed", formatNumber(derived.funnel.selectedForAnalysisCount), `${derived.funnel.cacheHits} hits / ${derived.funnel.cacheMisses} misses`)}
+        ${statCard("Timings", `${derived.funnel.screeningMs} ms / ${derived.funnel.analysisMs} ms`, "screen / analysis")}
+      </div>
+      <ul class="tight-list">
+        <li>Forced inclusions: ${formatNumber(derived.funnel.forcedCount)}</li>
+        <li>Top-score selections: ${formatNumber(derived.funnel.topScoreCount)}</li>
+        <li>Exploration reserve: ${formatNumber(derived.funnel.explorationCount)}</li>
+        <li>Current depth: ${formatNumber(derived.funnel.analysisDepth)} of max ${formatNumber(derived.funnel.policy.maxAnalysis)}</li>
+        <li>Candidate consideration target: ${formatNumber(derived.funnel.policy.candidateConsideration)}</li>
+      </ul>
+      ${
+        connectors.length
+          ? `
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr><th>Connector</th><th>Stored</th><th>Eligible</th><th>Candidate pool</th><th>Analysed</th></tr>
+                  </thead>
+                  <tbody>
+                    ${connectors
+                      .map(
+                        ([connector, counts]) => `
+                          <tr>
+                            <td>${escapeHtml(connector)}</td>
+                            <td>${formatNumber(counts.sourceUniverse)}</td>
+                            <td>${formatNumber(counts.eligibleForScreen)}</td>
+                            <td>${formatNumber(counts.candidatePool)}</td>
+                            <td>${formatNumber(counts.selectedForAnalysis)}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            `
+          : ""
+      }
+    </article>
+  `;
+}
+
 function renderOverview(derived, persistence) {
   const top = derived.portfolio.recommended.slice(0, 3);
   const bestOpportunitiesCard = `
@@ -1461,6 +1596,7 @@ function renderOverview(derived, persistence) {
             : `<p class="empty-state">No opportunity currently stands out for this company. Review the full list or import more opportunities.</p>`
         }
       </div>
+      ${renderSearchDepthControls(derived, { compact: true })}
     </article>
   `;
   const verificationQuestionsCard = derived.questions.length
@@ -1575,6 +1711,7 @@ function renderOpportunityList(derived, persistence) {
             <h2>Opportunities</h2>
             <p>Scan opportunities by action first, then fit, evidence confidence, value, timing, and the main verification question.</p>
           </div>
+          ${renderSearchDepthControls(derived)}
           ${renderOpportunityScopeTabs(derived)}
           ${renderFilters()}
           <div class="opportunity-list">
@@ -1597,13 +1734,13 @@ function renderOpportunityList(derived, persistence) {
 }
 
 function renderSavedPage(derived, persistence) {
-  const savedMatches = derived.portfolio.recommended.filter((item) => derived.savedSet.has(item.opportunityId));
+  const savedMatches = derived.portfolio.analysed.filter((item) => derived.savedSet.has(item.opportunityId));
   return `
     <section class="page-grid">
       <article class="card">
         <div class="section-heading">
           <h2>Saved opportunities</h2>
-          <p>Keep the opportunities worth revisiting together with their latest decision state and evidence confidence.</p>
+          <p>Keep saved opportunities accessible even when they fall outside the default surfaced shortlist or move into a different decision bucket.</p>
         </div>
         <div class="opportunity-list">
           ${
@@ -2529,12 +2666,13 @@ function renderDebugPage(derived, persistence) {
   return `
     <section class="split-layout">
       <div class="stack">
+        ${renderFunnelDiagnostics(derived)}
         <article class="card">
           <div class="section-heading">
             <h2>Analysis debugger</h2>
             <p>Inspect score components, claims, evidence links and verification triggers.</p>
           </div>
-          ${renderOpportunityListMini(derived.portfolio.recommended)}
+          ${renderOpportunityListMini(derived.portfolio.analysed)}
         </article>
       </div>
       ${renderDetailPanel(derived, persistence, true)}
@@ -2608,7 +2746,8 @@ function renderHealthPage(state, runtime, derived, persistence, sourceCache, con
     <section class="page-grid">
       <div class="card-grid five">
         ${statCard("Companies", String(state.companyProfiles.length))}
-        ${statCard("Analysed", String(derived.portfolio.counts.analysed))}
+        ${statCard("Stored universe", formatNumber(derived.funnel.sourceUniverseCount))}
+        ${statCard("Analysed", String(derived.portfolio.counts.analysed), `Depth ${derived.funnel.analysisDepth}`)}
         ${statCard("Saved", String(state.savedOpportunityIds.length))}
         ${statCard("Local store footprint", `${footprint} KB`)}
         ${statCard("Analysis cache", analysisCacheMetrics ? String(analysisCacheMetrics.cacheSize) : "n/a", analysisCacheMetrics ? `${analysisCacheMetrics.lastRunHits} hits / ${analysisCacheMetrics.lastRunMisses} misses` : "")}
@@ -2669,6 +2808,11 @@ function renderHealthPage(state, runtime, derived, persistence, sourceCache, con
                 ? `<small>Last pass ${analysisCacheMetrics.lastRunHits} hits / ${analysisCacheMetrics.lastRunMisses} misses · ${analysisCacheMetrics.lastPortfolioAnalysisMs} ms</small>`
                 : ""
             }
+          </div>
+          <div>
+            <strong>Candidate funnel</strong>
+            <p>${derived.funnel.safeExcludedCount} safely excluded, ${derived.funnel.candidatePoolCount} candidates considered, ${derived.funnel.selectedForAnalysisCount} fully analysed.</p>
+            <small>Screening ${derived.funnel.screeningMs} ms · analysis ${derived.funnel.analysisMs} ms · exploration ${derived.funnel.explorationCount}</small>
           </div>
           <div>
             <strong>Evidence coverage</strong>
@@ -2843,7 +2987,7 @@ function renderDetailPanel(derived, persistence, showDebugger = false) {
             ? renderReportTab(raw, selected, derived.selectedAiReview, persistence, derived.company.id, showDebugger)
             : uiState.detailTab === "evidence"
               ? renderEvidenceTab(raw, selected)
-              : renderDebugTab(raw, selected, derived.selectedAiReview)
+              : renderDebugTab(raw, selected, derived.selectedAiReview, derived.funnel.byOpportunityId?.[selected.opportunityId] ?? null)
         }
       </article>
     </aside>
@@ -3074,9 +3218,31 @@ function renderEvidenceTab(opportunity, match) {
   `;
 }
 
-function renderDebugTab(opportunity, match, aiReview) {
+function renderDebugTab(opportunity, match, aiReview, funnelMeta = null) {
   const aiRun = aiReview?.review ?? aiReview?.legacyReview ?? null;
   return `
+    ${
+      funnelMeta
+        ? `
+            <div class="detail-section">
+              <h4>Candidate screen</h4>
+              <ul class="tight-list">
+                <li>Screen score: ${Math.round(funnelMeta.screenScore)}/100</li>
+                <li>Exploration score: ${Math.round(funnelMeta.explorationScore)}/100</li>
+                <li>Forced inclusion: ${escapeHtml(funnelMeta.forced ? funnelMeta.forcedReasons.join(", ") : "No")}</li>
+                <li>Signals: ${escapeHtml(funnelMeta.screenSignals.join(", ") || "None recorded")}</li>
+                <li>Penalties: ${escapeHtml(funnelMeta.screenPenalties.join(", ") || "None recorded")}</li>
+                <li>Matched capabilities: ${escapeHtml(funnelMeta.matchedCapabilityLabels.join(", ") || "None recorded")}</li>
+                ${
+                  funnelMeta.safeExcludedReason
+                    ? `<li>Safe exclusion reason: ${escapeHtml(funnelMeta.safeExcludedReason)}</li>`
+                    : ""
+                }
+              </ul>
+            </div>
+          `
+        : ""
+    }
     <div class="detail-section">
       <h4>Scoring dimensions</h4>
       <div class="dimension-grid">
@@ -3672,6 +3838,26 @@ export function startApp(root, { runtime, store, services = {} }) {
       uiState.selectedOpportunityId = button.dataset.id;
       uiState.detailTab = uiState.route === "debug" ? "debug" : "report";
       if (uiState.route === "overview") uiState.route = "opportunities";
+      render();
+      return;
+    }
+
+    if (action === "search-wider") {
+      const currentDepth = getAnalysisDepth(derived.company.id, ACTIVE_SEARCH_POLICY);
+      const nextDepth = expandAnalysisDepth(derived.company.id, ACTIVE_SEARCH_POLICY);
+      if (nextDepth === currentDepth) {
+        setMessage(
+          `Current search depth is already at the local development maximum of ${ACTIVE_SEARCH_POLICY.maxAnalysis} analysed opportunities.`,
+          "info",
+          "compact"
+        );
+      } else {
+        setMessage(
+          `Search widened from ${currentDepth} to ${nextDepth} fully analysed opportunities for ${derived.company.legalName}.`,
+          "success",
+          "compact"
+        );
+      }
       render();
       return;
     }

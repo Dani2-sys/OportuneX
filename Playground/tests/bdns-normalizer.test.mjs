@@ -209,6 +209,8 @@ test("BDNS deadline normalization preserves date-only semantics and does not equ
 
   assert.equal(fixed.deadline.date, "2026-10-01");
   assert.equal(fixed.deadline.time, null);
+  assert.equal(fixed.deadline.timezone, "Europe/Madrid");
+  assert.equal(fixed.deadline.sourceTimezone, null);
   assert.equal(fixed.deadline.utcEquivalent, null);
   assert.equal(futureOpen.status, "open");
   assert.equal(indefinite.status, "open");

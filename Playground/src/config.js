@@ -57,6 +57,50 @@ export const DEFAULT_RUNTIME = {
   }
 };
 
+export const SEARCH_DEPTH_PLANS = {
+  preview: {
+    defaultAnalysis: 20,
+    maxAnalysis: 20,
+    customerSurface: 5
+  },
+  radar: {
+    defaultAnalysis: 75,
+    maxAnalysis: 150,
+    customerSurface: 25
+  },
+  pro: {
+    defaultAnalysis: 150,
+    maxAnalysis: 400,
+    customerSurface: 40
+  },
+  portfolio: {
+    defaultAnalysis: 200,
+    maxAnalysis: 600,
+    customerSurface: 50
+  }
+};
+
+export const DEFAULT_SEARCH_PLAN_ID = "radar";
+
+export function getSearchDepthPolicy({
+  planId = DEFAULT_SEARCH_PLAN_ID,
+  localDevelopment = true
+} = {}) {
+  const plan = SEARCH_DEPTH_PLANS[planId] ?? SEARCH_DEPTH_PLANS[DEFAULT_SEARCH_PLAN_ID];
+  return {
+    id: planId,
+    candidateConsideration: 150,
+    defaultAnalysis: plan.defaultAnalysis,
+    customerSurface: plan.customerSurface,
+    expansionBatch: 75,
+    explorationReserveRatio: 0.2,
+    planMaxAnalysis: plan.maxAnalysis,
+    // Billing can later enforce planMaxAnalysis. Local development keeps a wider deterministic ceiling.
+    maxAnalysis: localDevelopment ? Math.max(plan.defaultAnalysis, 300) : plan.maxAnalysis,
+    plans: SEARCH_DEPTH_PLANS
+  };
+}
+
 export const FIT_BAND_COPY = {
   EXCELLENT_FIT: "Excellent Fit",
   STRONG_FIT: "Strong Fit",

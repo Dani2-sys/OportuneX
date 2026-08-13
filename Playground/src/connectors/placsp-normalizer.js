@@ -364,7 +364,8 @@ function extractSubmissionDeadline(contractFolderStatus) {
     date: date || null,
     time,
     timezone: SPANISH_TIME_ZONE,
-    sourceTimezone: SPANISH_TIME_ZONE,
+    // PLACSP provides EndDate/EndTime but not an explicit timezone.
+    sourceTimezone: null,
     utcEquivalent: date && time ? toUtcIso(date, time, SPANISH_TIME_ZONE) : null,
     description: description || null
   };

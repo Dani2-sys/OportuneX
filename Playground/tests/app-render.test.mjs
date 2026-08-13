@@ -9,6 +9,7 @@ import { analyzePortfolio } from "../src/domain/analysis.js";
 import { parseSpanishDate } from "../src/domain/deadline.js";
 import { createMoney } from "../src/domain/money.js";
 import { importCompanyProfileFromJson } from "../src/services/company-importer.js";
+import { createAnalysisCache } from "../src/services/analysis-cache.js";
 import {
   createInMemorySourceCacheAdapter,
   createSourceOpportunityCache
@@ -228,8 +229,8 @@ function makeCachedPlacspOpportunity(overrides = {}) {
   };
 }
 
-function createMockStorageAdapter() {
-  let raw = null;
+function createMockStorageAdapter(initialRaw = null) {
+  let raw = initialRaw;
   return {
     load() {
       return {
@@ -375,6 +376,17 @@ function changeFilter(root, filter, value, checked = false) {
       },
       value,
       checked
+    }
+  });
+}
+
+function changeActiveCompany(root, companyId) {
+  root.dispatch("change", {
+    target: {
+      dataset: {
+        control: "active-company"
+      },
+      value: companyId
     }
   });
 }
@@ -945,6 +957,110 @@ test("startup hydrates cached PLACSP opportunities and reconnects saved ids from
     assert.deepEqual(store.getState().savedOpportunityIds, [cachedOpportunity.id]);
     assert.ok(store.getState().opportunities.some((item) => item.id === cachedOpportunity.id));
     assert.match(root.innerHTML, /Cached saved PLACSP opportunity/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("search wider is company-scoped and reuses deterministic cache instead of triggering AI", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    function makeFunnelPlacspOpportunity(index, overrides = {}) {
+      const base = makeCachedPlacspOpportunity({
+        id: `placsp:funnel-${index}`,
+        sourceOpportunityId: `https://contrataciondelestado.es/sindicacion/funnel-${index}`,
+        sourceNoticeVersionId: `placsp-version:funnel-${index}`,
+        title: `Relevant electrical opportunity ${index}`,
+        referenceNumber: `PLACSP-FUNNEL-${index}`
+      });
+      return {
+        ...base,
+        title: overrides.title ?? base.title,
+        description:
+          overrides.description ??
+          "Electrical maintenance, low-voltage work, HVAC controls and emergency systems support.",
+        cpvCodes: overrides.cpvCodes ?? ["50711000", "45315300"],
+        keywords: overrides.keywords ?? ["electrical maintenance", "hvac"],
+        location:
+          overrides.location ?? {
+            municipality: "Tarragona",
+            province: "Tarragona",
+            autonomousCommunity: "Catalonia",
+            display: "Tarragona"
+          },
+        ...overrides
+      };
+    }
+
+    const opportunities = Array.from({ length: 340 }, (_, index) =>
+      index % 9 === 0
+        ? makeFunnelPlacspOpportunity(index + 1)
+        : makeFunnelPlacspOpportunity(index + 1, {
+            title: `Irrelevant civil package ${index + 1}`,
+            description: "Civil engineering, asphalt resurfacing and kerb works.",
+            cpvCodes: ["45233252"],
+            keywords: ["roadworks", "asphalt"],
+            location: {
+              municipality: "Seville",
+              province: "Seville",
+              autonomousCommunity: "Andalusia",
+              display: "Seville"
+            }
+          })
+    );
+
+    const initialState = createDemoState();
+    const secondCompany = structuredClone(initialState.companyProfiles[0]);
+    secondCompany.id = "company-second";
+    secondCompany.legalName = "Second Demo Industrial SL";
+    secondCompany.tradingName = "Second Demo Industrial";
+    initialState.companyProfiles = [initialState.companyProfiles[0], secondCompany];
+    initialState.activeCompanyId = initialState.companyProfiles[0].id;
+    initialState.opportunities = opportunities;
+
+    const store = createStore({
+      storageAdapter: createMockStorageAdapter(JSON.stringify(initialState))
+    });
+    const analysisCache = createAnalysisCache();
+    let aiCalls = 0;
+    const root = createRoot();
+    const app = startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        analysisCache,
+        async runAiVerification() {
+          aiCalls += 1;
+          return {};
+        }
+      }
+    });
+
+    await app.whenSourceCacheReady();
+
+    let metrics = analysisCache.getMetrics();
+    assert.equal(metrics.lastRunOpportunityCount, 75);
+    assert.match(root.innerHTML, /Search wider/i);
+
+    clickAction(root, { action: "search-wider" });
+    metrics = analysisCache.getMetrics();
+    assert.equal(metrics.lastRunOpportunityCount, 150);
+    assert.equal(metrics.lastRunHits, 75);
+    assert.equal(metrics.lastRunMisses, 75);
+
+    changeActiveCompany(root, "company-second");
+    metrics = analysisCache.getMetrics();
+    assert.equal(metrics.lastRunOpportunityCount, 75);
+    assert.equal(metrics.lastRunMisses, 75);
+
+    changeActiveCompany(root, initialState.companyProfiles[0].id);
+    metrics = analysisCache.getMetrics();
+    assert.equal(metrics.lastRunOpportunityCount, 150);
+    assert.equal(metrics.lastRunHits, 150);
+    assert.equal(metrics.lastRunMisses, 0);
+    assert.equal(aiCalls, 0);
   } finally {
     globalThis.window = previousWindow;
   }

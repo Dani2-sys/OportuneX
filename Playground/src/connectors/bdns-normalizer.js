@@ -124,7 +124,8 @@ function createDateOnlyDeadline(date, sourceText = "") {
     date,
     time: null,
     timezone: SPANISH_TIME_ZONE,
-    sourceTimezone: SPANISH_TIME_ZONE,
+    // BDNS date-only sources do not publish an explicit timezone.
+    sourceTimezone: null,
     utcEquivalent: null
   };
 }

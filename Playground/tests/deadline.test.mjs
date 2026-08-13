@@ -14,6 +14,8 @@ test("parses Spanish deadlines without inventing a time", () => {
   const parsed = parseSpanishDate("12/09/2026");
   assert.equal(parsed.date, "2026-09-12");
   assert.equal(parsed.time, null);
+  assert.equal(parsed.timezone, "Europe/Madrid");
+  assert.equal(parsed.sourceTimezone, null);
   assert.equal(parsed.utcEquivalent, null);
   assert.equal(formatDeadline(parsed), "12/09/2026");
 });
@@ -21,6 +23,8 @@ test("parses Spanish deadlines without inventing a time", () => {
 test("keeps explicit deadline time", () => {
   const parsed = parseSpanishDate("12/09/2026 14:00");
   assert.equal(parsed.time, "14:00");
+  assert.equal(parsed.timezone, "Europe/Madrid");
+  assert.equal(parsed.sourceTimezone, null);
   assert.equal(formatDeadline(parsed), "12/09/2026 at 14:00");
 });
 

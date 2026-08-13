@@ -277,7 +277,7 @@ function normalizeDeadline(value, label) {
     assert(/^\d{2}:\d{2}$/.test(time), `${label}.time must use HH:MM.`);
   }
   const timezone = normalizeString(value.timezone, `${label}.timezone`, "Europe/Madrid");
-  const sourceTimezone = normalizeString(value.sourceTimezone, `${label}.sourceTimezone`, timezone);
+  const sourceTimezone = normalizeString(value.sourceTimezone, `${label}.sourceTimezone`, "") || null;
 
   return {
     sourceText: normalizeString(value.sourceText, `${label}.sourceText`, time ? `${date} ${time}` : date),
