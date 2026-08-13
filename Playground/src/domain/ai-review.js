@@ -1,3 +1,41 @@
+const FINGERPRINT_VERSION = "ai-context-v2";
+
+const VOLATILE_METADATA_KEYS = new Set([
+  "lastChecked",
+  "fetchedAt",
+  "syncedAt",
+  "retrievedAt",
+  "checkedAt",
+  "cacheCheckedAt",
+  "cacheUpdatedAt",
+  "connectorRunAt",
+  "connectorStartedAt",
+  "connectorCompletedAt",
+  "syncStartedAt",
+  "syncCompletedAt",
+  "refreshStartedAt",
+  "refreshCompletedAt"
+]);
+
+const PRESENTATION_KEYS = new Set([
+  "display",
+  "displayTitle",
+  "displayValue",
+  "displayValueLabel",
+  "displayLabel",
+  "companyAmountLabel",
+  "locationLabel",
+  "deadlineLabel",
+  "fitBandLabel",
+  "recommendationLabel",
+  "rankLabel",
+  "scopeLabel",
+  "lotLabel",
+  "executiveVerdict",
+  "reportMarkdown",
+  "analysisNow"
+]);
+
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -7,8 +45,34 @@ function sanitizeArray(value) {
 }
 
 function normalizeText(value, fallback = null) {
-  if (value == null || value === "") return fallback;
-  return typeof value === "string" ? value : String(value);
+  if (value == null) return fallback;
+  const text = typeof value === "string" ? value : String(value);
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized || fallback;
+}
+
+function normalizeNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizePrimitive(value) {
+  if (value == null) return null;
+  if (typeof value === "string") return normalizeText(value, null);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean") return value;
+  return normalizeText(value, null);
+}
+
+function isEmptyNormalizedValue(value) {
+  if (value == null) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (isPlainObject(value)) return Object.keys(value).length === 0;
+  return false;
 }
 
 function sortValue(value) {
@@ -29,150 +93,436 @@ function stableSerialize(value) {
 }
 
 function hashFingerprint(input) {
-  let hash = 2166136261;
+  let hash = 14695981039346656037n;
+  const prime = 1099511628211n;
+  const mask = 18446744073709551615n;
   for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+    hash ^= BigInt(input.charCodeAt(index));
+    hash = (hash * prime) & mask;
   }
-  return (hash >>> 0).toString(16).padStart(8, "0");
+  return hash.toString(16).padStart(16, "0");
 }
 
-function pickDecisionRelevantCompanyData(company = {}) {
+function sortAndDedupe(items) {
+  const unique = new Map();
+  for (const item of items) {
+    if (isEmptyNormalizedValue(item)) continue;
+    unique.set(stableSerialize(item), item);
+  }
+  return [...unique.entries()]
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map((entry) => entry[1]);
+}
+
+function compactObject(record) {
+  return Object.keys(record).reduce((next, key) => {
+    const value = record[key];
+    if (!isEmptyNormalizedValue(value)) next[key] = value;
+    return next;
+  }, {});
+}
+
+function mapSemanticRef(value, idMap) {
+  const reference = normalizeText(value, null);
+  if (!reference) return null;
+  return idMap.get(reference) ?? reference;
+}
+
+function normalizeRefArray(value, idMap) {
+  return sortAndDedupe(
+    sanitizeArray(value)
+      .map((item) => mapSemanticRef(item, idMap))
+      .filter(Boolean)
+  );
+}
+
+function looksLikeMoney(value) {
+  return isPlainObject(value) && (
+    "amountMinor" in value ||
+    "original" in value ||
+    ("amountType" in value && !("min" in value || "max" in value)) ||
+    ("vatStatus" in value && !("min" in value || "max" in value))
+  );
+}
+
+function normalizeMoney(value) {
+  if (!isPlainObject(value)) return null;
+  return compactObject({
+    amountMinor: normalizeNumber(value.amountMinor),
+    currency: normalizeText(value.currency, null),
+    vatStatus: normalizeText(value.vatStatus, null),
+    amountType: normalizeText(value.amountType, null)
+  });
+}
+
+function looksLikeLocation(value) {
+  if (!isPlainObject(value)) return false;
+  return [
+    "municipality",
+    "province",
+    "autonomousCommunity",
+    "country",
+    "postalCode",
+    "acceptedRegions",
+    "excludedRegions",
+    "willingToTravel",
+    "preferredWorkingRadiusKm"
+  ].some((key) => key in value);
+}
+
+function normalizeLocation(value, context, path) {
+  if (!isPlainObject(value)) return null;
+  const knownKeys = new Set([
+    "municipality",
+    "province",
+    "autonomousCommunity",
+    "country",
+    "postalCode",
+    "acceptedRegions",
+    "excludedRegions",
+    "willingToTravel",
+    "preferredWorkingRadiusKm",
+    "display"
+  ]);
+  const extras = normalizeRemainingKeys(value, context, path, knownKeys);
+
+  return compactObject({
+    municipality: normalizeText(value.municipality, null),
+    province: normalizeText(value.province, null),
+    autonomousCommunity: normalizeText(value.autonomousCommunity, null),
+    country: normalizeText(value.country, null),
+    postalCode: normalizeText(value.postalCode, null),
+    acceptedRegions: normalizeSemanticValue(value.acceptedRegions, context, [...path, "acceptedRegions"]),
+    excludedRegions: normalizeSemanticValue(value.excludedRegions, context, [...path, "excludedRegions"]),
+    willingToTravel:
+      typeof value.willingToTravel === "boolean" ? value.willingToTravel : null,
+    preferredWorkingRadiusKm: normalizeNumber(value.preferredWorkingRadiusKm),
+    ...extras
+  });
+}
+
+function normalizeRemainingKeys(value, context, path, excludedKeys = new Set()) {
+  return Object.keys(value)
+    .sort((left, right) => left.localeCompare(right))
+    .reduce((record, key) => {
+      if (excludedKeys.has(key)) return record;
+      const nextValue = normalizeKeyedValue(key, value[key], context, path);
+      if (!isEmptyNormalizedValue(nextValue)) record[key] = nextValue;
+      return record;
+    }, {});
+}
+
+function normalizeKeyedValue(key, value, context, path) {
+  if (context.excludeKeys?.has(key)) return null;
+  if (VOLATILE_METADATA_KEYS.has(key)) return null;
+  if (PRESENTATION_KEYS.has(key)) return null;
+  if (key === "sourceIds") return normalizeRefArray(value, context.sourceIdMap ?? new Map());
+  if (key === "evidenceIds") return normalizeRefArray(value, context.evidenceIdMap ?? new Map());
+  if (key === "sourceId") return mapSemanticRef(value, context.sourceIdMap ?? new Map());
+  if (key === "evidenceId") return mapSemanticRef(value, context.evidenceIdMap ?? new Map());
+  if (key === "label" && path[path.length - 1] === "recommendedAction") return null;
+  return normalizeSemanticValue(value, context, [...path, key]);
+}
+
+function normalizeSemanticValue(value, context = {}, path = []) {
+  if (value == null) return null;
+  if (Array.isArray(value)) {
+    return sortAndDedupe(
+      value
+        .map((item) => normalizeSemanticValue(item, context, path))
+        .filter((item) => !isEmptyNormalizedValue(item))
+    );
+  }
+  if (looksLikeMoney(value)) return normalizeMoney(value);
+  if (looksLikeLocation(value)) return normalizeLocation(value, context, path);
+  if (!isPlainObject(value)) return normalizePrimitive(value);
+
+  return compactObject(
+    Object.keys(value)
+      .sort((left, right) => left.localeCompare(right))
+      .reduce((record, key) => {
+        const nextValue = normalizeKeyedValue(key, value[key], context, path);
+        if (!isEmptyNormalizedValue(nextValue)) record[key] = nextValue;
+        return record;
+      }, {})
+  );
+}
+
+function buildSemanticCollection(items, normalizeRecord) {
+  const idMap = new Map();
+  const byKey = new Map();
+
+  sanitizeArray(items).forEach((item, index) => {
+    const normalized = normalizeRecord(item, index);
+    const fallbackId = normalizeText(item?.id, `record-${index + 1}`);
+    const keyPayload = isEmptyNormalizedValue(normalized)
+      ? { fallbackId }
+      : normalized;
+    const semanticKey = stableSerialize(keyPayload);
+
+    if (fallbackId) idMap.set(fallbackId, semanticKey);
+    if (!byKey.has(semanticKey)) byKey.set(semanticKey, keyPayload);
+  });
+
   return {
-    id: company.id ?? null,
-    profileMode: company.profileMode ?? null,
-    legalName: company.legalName ?? null,
-    tradingName: company.tradingName ?? null,
-    geography: company.geography ?? {},
-    size: company.size ?? {},
-    preferences: company.preferences ?? {},
-    experience: company.experience ?? {},
-    grants: company.grants ?? {},
-    facts: company.facts ?? {},
-    factsHistory: company.factsHistory ?? {},
-    capabilities: sanitizeArray(company.capabilities),
-    certifications: sanitizeArray(company.certifications),
-    insurance: sanitizeArray(company.insurance),
-    classifications: company.classifications ?? {},
-    customAnswers: company.customAnswers ?? {}
+    idMap,
+    records: [...byKey.entries()]
+      .sort((left, right) => left[0].localeCompare(right[0]))
+      .map((entry) => entry[1])
   };
 }
 
-function pickDecisionRelevantOpportunityData(opportunity = {}) {
+function normalizeSourceRecord(source) {
+  return normalizeSemanticValue(source, {
+    excludeKeys: new Set(["id"])
+  }, ["source"]);
+}
+
+function normalizeEvidenceRecord(evidence, sourceIdMap) {
+  return normalizeSemanticValue(evidence, {
+    excludeKeys: new Set(["id"]),
+    sourceIdMap
+  }, ["evidence"]);
+}
+
+function buildCompanyContext(company = {}) {
+  const companySources = buildSemanticCollection(company.companySources, normalizeSourceRecord);
+  const context = {
+    sourceIdMap: companySources.idMap,
+    evidenceIdMap: new Map()
+  };
+
   return {
-    id: opportunity.id ?? null,
-    canonicalId: opportunity.canonicalId ?? null,
-    sourceOpportunityId: opportunity.sourceOpportunityId ?? null,
-    sourceNoticeVersionId: opportunity.sourceNoticeVersionId ?? null,
-    type: opportunity.type ?? null,
-    noticeType: opportunity.noticeType ?? null,
-    status: opportunity.status ?? null,
-    title: opportunity.title ?? null,
-    description: opportunity.description ?? null,
-    issuingOrganisation: opportunity.issuingOrganisation ?? null,
-    contractingAuthority: opportunity.contractingAuthority ?? null,
-    publicationDate: opportunity.publicationDate ?? null,
-    modificationDate: opportunity.modificationDate ?? null,
-    startDate: opportunity.startDate ?? null,
-    deadline: opportunity.deadline ?? null,
-    location: opportunity.location ?? {},
-    cpvCodes: sanitizeArray(opportunity.cpvCodes),
-    keywords: sanitizeArray(opportunity.keywords),
-    procedureType: opportunity.procedureType ?? null,
-    estimatedValue: opportunity.estimatedValue ?? null,
-    awardValue: opportunity.awardValue ?? null,
-    baseBudget: opportunity.baseBudget ?? null,
-    relevantValue: opportunity.relevantValue ?? null,
-    wholeProcedureValue: opportunity.wholeProcedureValue ?? null,
-    annualValue: opportunity.annualValue ?? null,
-    multiYearValue: opportunity.multiYearValue ?? null,
-    maximumAidPerBeneficiary: opportunity.maximumAidPerBeneficiary ?? null,
-    programmeBudget: opportunity.programmeBudget ?? null,
-    eligibleProjectCost: opportunity.eligibleProjectCost ?? null,
-    aidIntensity: opportunity.aidIntensity ?? null,
-    duration: opportunity.duration ?? null,
-    guarantees: opportunity.guarantees ?? null,
-    submissionMechanism: opportunity.submissionMechanism ?? null,
-    applicationUrl: opportunity.applicationUrl ?? null,
-    noticeUrl: opportunity.noticeUrl ?? null,
-    referenceNumber: opportunity.referenceNumber ?? null,
-    requiredDocuments: sanitizeArray(opportunity.requiredDocuments),
-    documents: sanitizeArray(opportunity.documents),
-    lastChecked: opportunity.lastChecked ?? null,
-    contacts: sanitizeArray(opportunity.contacts),
-    sources: sanitizeArray(opportunity.sources),
-    evidence: sanitizeArray(opportunity.evidence),
-    availabilityWarnings: sanitizeArray(opportunity.availabilityWarnings),
-    requirements: sanitizeArray(opportunity.requirements),
-    lots: sanitizeArray(opportunity.lots),
-    sourceConflicts: sanitizeArray(opportunity.sourceConflicts),
-    derivedStatus: opportunity.derivedStatus ?? null
+    payload: compactObject({
+      id: normalizeText(company.id, null),
+      profileMode: normalizeText(company.profileMode, null),
+      cif: normalizeText(company.cif, null),
+      geography: normalizeSemanticValue(company.geography, context, ["company", "geography"]),
+      size: normalizeSemanticValue(company.size, context, ["company", "size"]),
+      preferences: normalizeSemanticValue(company.preferences, context, ["company", "preferences"]),
+      experience: normalizeSemanticValue(company.experience, context, ["company", "experience"]),
+      grants: normalizeSemanticValue(company.grants, context, ["company", "grants"]),
+      facts: normalizeSemanticValue(company.facts, context, ["company", "facts"]),
+      factsHistory: normalizeSemanticValue(company.factsHistory, context, ["company", "factsHistory"]),
+      capabilities: normalizeSemanticValue(company.capabilities, context, ["company", "capabilities"]),
+      certifications: normalizeSemanticValue(company.certifications, context, ["company", "certifications"]),
+      insurance: normalizeSemanticValue(company.insurance, context, ["company", "insurance"]),
+      classifications: normalizeSemanticValue(company.classifications, context, ["company", "classifications"]),
+      customAnswers: normalizeSemanticValue(company.customAnswers, context, ["company", "customAnswers"]),
+      companySources: companySources.records
+    }),
+    sourceIdMap: companySources.idMap
   };
 }
 
-function pickDecisionRelevantAnalysisData(analysis = {}) {
-  return {
-    fitBand: analysis.fitBand ?? analysis.recommendationClass ?? null,
-    recommendationClass: analysis.recommendationClass ?? null,
-    eligibilityStatus: analysis.eligibilityStatus ?? null,
-    displayTitle: analysis.displayTitle ?? null,
-    displayValueLabel: analysis.displayValueLabel ?? null,
-    companyAmountLabel: analysis.companyAmountLabel ?? null,
-    locationLabel: analysis.locationLabel ?? null,
-    deadlineLabel: analysis.deadlineLabel ?? null,
-    hasPublishedLot: analysis.hasPublishedLot ?? false,
-    lotLabel: analysis.lotLabel ?? null,
-    scopeLabel: analysis.scopeLabel ?? null,
-    decision: analysis.decision
-      ? {
-          recommendedAction: {
-            code: analysis.decision.recommendedAction?.code ?? null,
-            label: analysis.decision.recommendedAction?.label ?? null,
-            bucket: analysis.decision.recommendedAction?.bucket ?? null
-          },
-          mainReason: analysis.decision.mainReason ?? null,
-          mainQuestion: analysis.decision.mainQuestion ?? null
-        }
-      : null,
-    dimensions: analysis.dimensions
-      ? {
-          capabilityFit: analysis.dimensions.capabilityFit ?? null,
-          baseCapabilityFit: analysis.dimensions.baseCapabilityFit ?? null,
-          specialistScopeConfidence: analysis.dimensions.specialistScopeConfidence ?? null,
-          financialScaleFit: analysis.dimensions.financialScaleFit ?? null,
-          geographicFit: analysis.dimensions.geographicFit ?? null,
-          strategicFit: analysis.dimensions.strategicFit ?? null,
-          qualificationReadiness: analysis.dimensions.qualificationReadiness ?? null,
-          deadlineFeasibility: analysis.dimensions.deadlineFeasibility ?? null,
-          applicationEffort: analysis.dimensions.applicationEffort ?? null,
-          evidenceQuality: analysis.dimensions.evidenceQuality ?? null,
-          scaleAssessment: analysis.dimensions.scaleAssessment ?? null,
-          geographyAssessment: analysis.dimensions.geographyAssessment ?? null
-        }
-      : null,
-    confidenceShield: analysis.confidenceShield ?? null,
-    positives: sanitizeArray(analysis.positives),
-    blockers: sanitizeArray(analysis.blockers),
-    potentialHardBlockers: sanitizeArray(analysis.potentialHardBlockers),
-    unknowns: sanitizeArray(analysis.unknowns),
-    risks: sanitizeArray(analysis.risks),
-    requirementRows: sanitizeArray(analysis.requirementRows),
-    adaptiveQuestions: sanitizeArray(analysis.adaptiveQuestions),
-    financialPicture: analysis.financialPicture ?? null,
-    preMortem: sanitizeArray(analysis.preMortem),
-    matchScore: analysis.matchScore ?? null,
-    priorityScore: analysis.priorityScore ?? null
+function buildOpportunityContext(opportunity = {}) {
+  const sources = buildSemanticCollection(opportunity.sources, normalizeSourceRecord);
+  const evidence = buildSemanticCollection(opportunity.evidence, (item) =>
+    normalizeEvidenceRecord(item, sources.idMap)
+  );
+  const context = {
+    sourceIdMap: sources.idMap,
+    evidenceIdMap: evidence.idMap
   };
+
+  return {
+    payload: compactObject({
+      id: normalizeText(opportunity.id, null),
+      canonicalId: normalizeText(opportunity.canonicalId, null),
+      sourceOpportunityId: normalizeText(opportunity.sourceOpportunityId, null),
+      sourceNoticeVersionId: normalizeText(opportunity.sourceNoticeVersionId, null),
+      type: normalizeText(opportunity.type, null),
+      noticeType: normalizeText(opportunity.noticeType, null),
+      status: normalizeText(opportunity.status, null),
+      derivedStatus: normalizeText(opportunity.derivedStatus, null),
+      cancellationStatus: normalizeText(opportunity.cancellationStatus, null),
+      title: normalizeText(opportunity.title, null),
+      description: normalizeText(opportunity.description, null),
+      issuingOrganisation: normalizeText(opportunity.issuingOrganisation, null),
+      contractingAuthority: normalizeText(opportunity.contractingAuthority, null),
+      publicationDate: normalizeText(opportunity.publicationDate, null),
+      modificationDate: normalizeText(opportunity.modificationDate, null),
+      startDate: normalizeText(opportunity.startDate, null),
+      deadline: normalizeSemanticValue(opportunity.deadline, context, ["opportunity", "deadline"]),
+      location: normalizeSemanticValue(opportunity.location, context, ["opportunity", "location"]),
+      cpvCodes: normalizeSemanticValue(opportunity.cpvCodes, context, ["opportunity", "cpvCodes"]),
+      keywords: normalizeSemanticValue(opportunity.keywords, context, ["opportunity", "keywords"]),
+      procedureType: normalizeText(opportunity.procedureType, null),
+      estimatedValue: normalizeMoney(opportunity.estimatedValue),
+      awardValue: normalizeMoney(opportunity.awardValue),
+      baseBudget: normalizeMoney(opportunity.baseBudget),
+      relevantValue: normalizeMoney(opportunity.relevantValue),
+      wholeProcedureValue: normalizeMoney(opportunity.wholeProcedureValue),
+      annualValue: normalizeMoney(opportunity.annualValue),
+      multiYearValue: normalizeMoney(opportunity.multiYearValue),
+      maximumAidPerBeneficiary: normalizeMoney(opportunity.maximumAidPerBeneficiary),
+      programmeBudget: normalizeMoney(opportunity.programmeBudget),
+      eligibleProjectCost: normalizeMoney(opportunity.eligibleProjectCost),
+      aidIntensity: normalizeText(opportunity.aidIntensity, null),
+      duration: normalizeText(opportunity.duration, null),
+      guarantees: normalizeText(opportunity.guarantees, null),
+      submissionMechanism: normalizeText(opportunity.submissionMechanism, null),
+      applicationUrl: normalizeText(opportunity.applicationUrl, null),
+      noticeUrl: normalizeText(opportunity.noticeUrl, null),
+      referenceNumber: normalizeText(opportunity.referenceNumber, null),
+      requiredDocuments: normalizeSemanticValue(opportunity.requiredDocuments, context, ["opportunity", "requiredDocuments"]),
+      documents: normalizeSemanticValue(opportunity.documents, context, ["opportunity", "documents"]),
+      contacts: normalizeSemanticValue(opportunity.contacts, context, ["opportunity", "contacts"]),
+      availabilityWarnings: normalizeSemanticValue(opportunity.availabilityWarnings, context, ["opportunity", "availabilityWarnings"]),
+      requirements: normalizeSemanticValue(opportunity.requirements, context, ["opportunity", "requirements"]),
+      lots: normalizeSemanticValue(opportunity.lots, context, ["opportunity", "lots"]),
+      sourceConflicts: normalizeSemanticValue(opportunity.sourceConflicts, context, ["opportunity", "sourceConflicts"]),
+      sources: sources.records,
+      evidence: evidence.records
+    }),
+    sourceIdMap: sources.idMap,
+    evidenceIdMap: evidence.idMap
+  };
+}
+
+function normalizeAssessment(value, context, path) {
+  if (!isPlainObject(value)) return null;
+  return normalizeSemanticValue(value, {
+    ...context,
+    excludeKeys: new Set(["note"])
+  }, path);
+}
+
+function normalizeConfidenceShield(shield) {
+  if (!isPlainObject(shield)) return null;
+  return compactObject({
+    officialSourceVerified:
+      typeof shield.officialSourceVerified === "boolean" ? shield.officialSourceVerified : null,
+    sourceFieldsEvidenced: normalizeNumber(shield.sourceFieldsEvidenced),
+    totalSourceFields: normalizeNumber(shield.totalSourceFields),
+    criticalFieldsVerified: normalizeNumber(shield.criticalFieldsVerified),
+    totalCriticalFields: normalizeNumber(shield.totalCriticalFields),
+    mandatoryConfirmed: normalizeNumber(shield.mandatoryConfirmed),
+    mandatoryNeedsVerification: normalizeNumber(shield.mandatoryNeedsVerification),
+    mandatoryFailed: normalizeNumber(shield.mandatoryFailed),
+    hardMandatoryConfirmed: normalizeNumber(shield.hardMandatoryConfirmed),
+    hardMandatoryNeedsVerification: normalizeNumber(shield.hardMandatoryNeedsVerification),
+    hardMandatoryFailed: normalizeNumber(shield.hardMandatoryFailed),
+    companyConfirmationsNeeded: normalizeNumber(shield.companyConfirmationsNeeded),
+    eligibilityConfidence: normalizeText(shield.eligibilityConfidence, null),
+    companyFactConfidence: normalizeText(shield.companyFactConfidence, null),
+    allSourceFieldsEvidenced:
+      typeof shield.allSourceFieldsEvidenced === "boolean" ? shield.allSourceFieldsEvidenced : null,
+    currentEvidenceRequired: normalizeNumber(shield.currentEvidenceRequired),
+    conflictingSources:
+      typeof shield.conflictingSources === "boolean" ? shield.conflictingSources : null,
+    outstandingQuestions: normalizeNumber(shield.outstandingQuestions),
+    sourceConflictsCount: normalizeNumber(shield.sourceConflictsCount)
+  });
+}
+
+function normalizeDecision(decision) {
+  if (!isPlainObject(decision)) return null;
+  return compactObject({
+    recommendedAction: isPlainObject(decision.recommendedAction)
+      ? compactObject({
+          code: normalizeText(decision.recommendedAction.code, null),
+          bucket: normalizeText(decision.recommendedAction.bucket, null)
+        })
+      : null
+  });
+}
+
+function normalizeIssueItems(items, context, path) {
+  return sortAndDedupe(
+    sanitizeArray(items)
+      .map((item) => {
+        if (!isPlainObject(item)) return normalizePrimitive(item);
+        return compactObject({
+          id: normalizeText(item.id, null),
+          title: normalizeText(item.title, null),
+          severity: normalizeText(item.severity, null),
+          priority: normalizeNumber(item.priority),
+          category: normalizeText(item.category, null),
+          requiresVerification:
+            typeof item.requiresVerification === "boolean" ? item.requiresVerification : null,
+          detail: normalizeText(item.detail, null)
+        });
+      })
+      .map((item) => normalizeSemanticValue(item, context, path))
+      .filter((item) => !isEmptyNormalizedValue(item))
+  );
+}
+
+function normalizeFinancialPicture(financialPicture) {
+  if (!isPlainObject(financialPicture)) return null;
+  return compactObject({
+    kind: normalizeText(financialPicture.kind, null),
+    lines: sortAndDedupe(
+      sanitizeArray(financialPicture.lines)
+        .map((line) => {
+          if (!isPlainObject(line)) return null;
+          return compactObject({
+            id: normalizeText(line.id, null),
+            amountType: normalizeText(line.amountType, null),
+            vatStatus: normalizeText(line.vatStatus, null),
+            primary: typeof line.primary === "boolean" ? line.primary : null,
+            money: normalizeMoney(line.money),
+            text: normalizeText(line.text, null)
+          });
+        })
+        .filter((line) => !isEmptyNormalizedValue(line))
+    )
+  });
+}
+
+function buildAnalysisContext(analysis = {}, companySourceIdMap, opportunitySourceIdMap, evidenceIdMap) {
+  const sourceIdMap = new Map([
+    ...companySourceIdMap.entries(),
+    ...opportunitySourceIdMap.entries()
+  ]);
+  const context = {
+    sourceIdMap,
+    evidenceIdMap
+  };
+
+  return compactObject({
+    eligibilityStatus: normalizeText(analysis.eligibilityStatus, null),
+    decision: normalizeDecision(analysis.decision),
+    matchScore: normalizeNumber(analysis.matchScore),
+    dimensions: compactObject({
+      capabilityFit: normalizeNumber(analysis.dimensions?.capabilityFit),
+      baseCapabilityFit: normalizeNumber(analysis.dimensions?.baseCapabilityFit),
+      specialistScopeConfidence: normalizeNumber(analysis.dimensions?.specialistScopeConfidence),
+      financialScaleFit: normalizeNumber(analysis.dimensions?.financialScaleFit),
+      geographicFit: normalizeNumber(analysis.dimensions?.geographicFit),
+      strategicFit: normalizeNumber(analysis.dimensions?.strategicFit),
+      qualificationReadiness: normalizeNumber(analysis.dimensions?.qualificationReadiness),
+      deadlineFeasibility: normalizeNumber(analysis.dimensions?.deadlineFeasibility),
+      applicationEffort: normalizeNumber(analysis.dimensions?.applicationEffort),
+      scaleAssessment: normalizeAssessment(analysis.dimensions?.scaleAssessment, context, ["analysis", "dimensions", "scaleAssessment"]),
+      geographyAssessment: normalizeAssessment(analysis.dimensions?.geographyAssessment, context, ["analysis", "dimensions", "geographyAssessment"])
+    }),
+    confidenceShield: normalizeConfidenceShield(analysis.confidenceShield),
+    blockers: normalizeIssueItems(analysis.blockers, context, ["analysis", "blockers"]),
+    potentialHardBlockers: normalizeIssueItems(analysis.potentialHardBlockers, context, ["analysis", "potentialHardBlockers"]),
+    unknowns: normalizeIssueItems(analysis.unknowns, context, ["analysis", "unknowns"]),
+    risks: normalizeIssueItems(analysis.risks, context, ["analysis", "risks"]),
+    requirementRows: normalizeSemanticValue(analysis.requirementRows, context, ["analysis", "requirementRows"]),
+    financialPicture: normalizeFinancialPicture(analysis.financialPicture)
+  });
 }
 
 export function createAiVerificationContextFingerprint(company, opportunity, analysis) {
+  const companyContext = buildCompanyContext(company);
+  const opportunityContext = buildOpportunityContext(opportunity);
   const payload = {
-    company: pickDecisionRelevantCompanyData(company),
-    opportunity: pickDecisionRelevantOpportunityData(opportunity),
-    analysis: pickDecisionRelevantAnalysisData(analysis)
+    company: companyContext.payload,
+    opportunity: opportunityContext.payload,
+    analysis: buildAnalysisContext(
+      analysis,
+      companyContext.sourceIdMap,
+      opportunityContext.sourceIdMap,
+      opportunityContext.evidenceIdMap
+    )
   };
   const serialized = stableSerialize(payload);
-  return `ai-context-v1:${hashFingerprint(serialized)}`;
+  return `${FINGERPRINT_VERSION}:${hashFingerprint(serialized)}`;
 }
 
 export function extractPersistedAiVerificationResult(result = {}) {
