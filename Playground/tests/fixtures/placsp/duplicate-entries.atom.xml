@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed
+  xmlns="http://www.w3.org/2005/Atom"
+  xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+  xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2">
+  <id>https://contrataciondelestado.es/sindicacion/duplicate.atom</id>
+  <updated>2026-08-12T10:00:00+02:00</updated>
+  <link rel="self" href="https://contrataciondelestado.es/sindicacion/duplicate.atom" />
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-dup-001</id>
+    <title>Solar installation framework</title>
+    <summary>Initial published version.</summary>
+    <updated>2026-08-10T10:00:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-dup-001-v1" />
+    <cac-place-ext:ContractFolderStatus>
+      <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+      <cbc:ContractFolderID>REF-DUP-001</cbc:ContractFolderID>
+      <cac:ProcurementProject>
+        <cbc:Name>Solar installation framework</cbc:Name>
+        <cac:BudgetAmount>
+          <cbc:EstimatedOverallContractAmount currencyID="EUR">1000000</cbc:EstimatedOverallContractAmount>
+          <cbc:TaxExclusiveAmount currencyID="EUR">950000</cbc:TaxExclusiveAmount>
+        </cac:BudgetAmount>
+      </cac:ProcurementProject>
+      <cac:TenderingProcess>
+        <cac:TenderSubmissionDeadlinePeriod>
+          <cbc:EndDate>2026-08-25</cbc:EndDate>
+        </cac:TenderSubmissionDeadlinePeriod>
+      </cac:TenderingProcess>
+    </cac-place-ext:ContractFolderStatus>
+  </entry>
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-dup-001</id>
+    <title>Solar installation framework</title>
+    <summary>Corrected published version.</summary>
+    <updated>2026-08-12T10:00:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-dup-001-v2" />
+    <cac-place-ext:ContractFolderStatus>
+      <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+      <cbc:ContractFolderID>REF-DUP-001</cbc:ContractFolderID>
+      <cac:ProcurementProject>
+        <cbc:Name>Solar installation framework</cbc:Name>
+        <cac:BudgetAmount>
+          <cbc:EstimatedOverallContractAmount currencyID="EUR">1200000</cbc:EstimatedOverallContractAmount>
+          <cbc:TaxExclusiveAmount currencyID="EUR">1135000</cbc:TaxExclusiveAmount>
+        </cac:BudgetAmount>
+      </cac:ProcurementProject>
+      <cac:TenderingProcess>
+        <cac:TenderSubmissionDeadlinePeriod>
+          <cbc:EndDate>2026-08-30</cbc:EndDate>
+          <cbc:EndTime>09:30:00</cbc:EndTime>
+        </cac:TenderSubmissionDeadlinePeriod>
+      </cac:TenderingProcess>
+    </cac-place-ext:ContractFolderStatus>
+  </entry>
+</feed>

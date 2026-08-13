@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed
+  xmlns="http://www.w3.org/2005/Atom"
+  xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+  xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2">
+  <id>https://contrataciondelestado.es/sindicacion/multilot.atom</id>
+  <updated>2026-08-11T07:30:00+02:00</updated>
+  <link rel="self" href="https://contrataciondelestado.es/sindicacion/multilot.atom" />
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-lots-001</id>
+    <title>Multi-lot maintenance framework</title>
+    <summary>Lot-specific budget figures are published.</summary>
+    <updated>2026-08-11T07:30:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-lots-001" />
+    <cac-place-ext:ContractFolderStatus>
+      <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+      <cbc:ContractFolderID>REF-LOTS-001</cbc:ContractFolderID>
+      <cac:ProcurementProject>
+        <cbc:Name>Multi-lot maintenance framework</cbc:Name>
+        <cac:BudgetAmount>
+          <cbc:EstimatedOverallContractAmount currencyID="EUR">340000</cbc:EstimatedOverallContractAmount>
+          <cbc:TaxExclusiveAmount currencyID="EUR">320000</cbc:TaxExclusiveAmount>
+        </cac:BudgetAmount>
+      </cac:ProcurementProject>
+      <cac:ProcurementProjectLot>
+        <cbc:ID>LOT-1</cbc:ID>
+        <cac:ProcurementProject>
+          <cbc:Name>Lot 1 low-voltage maintenance</cbc:Name>
+          <cac:BudgetAmount>
+            <cbc:TaxExclusiveAmount currencyID="EUR">84500</cbc:TaxExclusiveAmount>
+          </cac:BudgetAmount>
+          <cac:RequiredCommodityClassification>
+            <cbc:ItemClassificationCode>50711000</cbc:ItemClassificationCode>
+          </cac:RequiredCommodityClassification>
+          <cac:RealizedLocation>
+            <cbc:CountrySubentity>Catalonia</cbc:CountrySubentity>
+            <cac:Address>
+              <cbc:CityName>Tarragona</cbc:CityName>
+            </cac:Address>
+          </cac:RealizedLocation>
+        </cac:ProcurementProject>
+        <cac:TenderingTerms>
+          <cac:TendererQualificationRequest>
+            <cbc:Description>Lot 1 requires electrical maintenance capability evidence.</cbc:Description>
+          </cac:TendererQualificationRequest>
+        </cac:TenderingTerms>
+      </cac:ProcurementProjectLot>
+      <cac:ProcurementProjectLot>
+        <cbc:ID>LOT-2</cbc:ID>
+        <cac:ProcurementProject>
+          <cbc:Name>Lot 2 monitoring systems</cbc:Name>
+          <cac:BudgetAmount>
+            <cbc:TaxExclusiveAmount currencyID="EUR">113500</cbc:TaxExclusiveAmount>
+          </cac:BudgetAmount>
+          <cac:RequiredCommodityClassification>
+            <cbc:ItemClassificationCode>45315300</cbc:ItemClassificationCode>
+          </cac:RequiredCommodityClassification>
+        </cac:ProcurementProject>
+      </cac:ProcurementProjectLot>
+      <cac:TenderingProcess>
+        <cac:TenderSubmissionDeadlinePeriod>
+          <cbc:EndDate>2026-08-26</cbc:EndDate>
+        </cac:TenderSubmissionDeadlinePeriod>
+      </cac:TenderingProcess>
+    </cac-place-ext:ContractFolderStatus>
+  </entry>
+</feed>

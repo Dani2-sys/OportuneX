@@ -4,6 +4,65 @@ import assert from "node:assert/strict";
 import { importCompanyProfileFromJson } from "../src/services/company-importer.js";
 import { createLocalStorageAdapter, createStore } from "../src/state/store.js";
 
+function makePlacspOpportunity(index, overrides = {}) {
+  const id = overrides.id ?? `placsp:test-${index}`;
+  return {
+    id,
+    sourceConnector: "placsp",
+    sourceOpportunityId: overrides.sourceOpportunityId ?? `https://contrataciondelestado.es/sindicacion/test-${index}`,
+    sourceNoticeVersionId: overrides.sourceNoticeVersionId ?? `placsp-version:${index}`,
+    type: "contract",
+    noticeType: "active_contract_notice",
+    status: "open",
+    title: overrides.title ?? `PLACSP test opportunity ${index}`,
+    description: "Synthetic source-backed opportunity for persistence tests.",
+    location: {
+      display: "Tarragona"
+    },
+    cpvCodes: ["50711000"],
+    keywords: ["electrical"],
+    estimatedValue: null,
+    awardValue: null,
+    baseBudget: null,
+    relevantValue: null,
+    wholeProcedureValue: null,
+    annualValue: null,
+    multiYearValue: null,
+    maximumAidPerBeneficiary: null,
+    programmeBudget: null,
+    eligibleProjectCost: null,
+    aidIntensity: "",
+    duration: "",
+    guarantees: "",
+    submissionMechanism: "",
+    applicationUrl: "",
+    noticeUrl: "https://contrataciondelestado.es/wps/poc?uri=test",
+    referenceNumber: `REF-${index}`,
+    requiredDocuments: [],
+    documents: [],
+    contacts: [],
+    sources: [
+      {
+        id: `src-${index}`,
+        organisation: "Plataforma de Contratacion del Sector Publico",
+        title: "Official PLACSP ATOM feed",
+        url: "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom",
+        official: true,
+        metadata: {
+          sourceType: "official_open_data_atom"
+        }
+      }
+    ],
+    evidence: [],
+    requirements: [],
+    lots: [],
+    sourceConflicts: [],
+    availabilityWarnings: [],
+    cancellationStatus: null,
+    ...overrides
+  };
+}
+
 const MINIMAL_PROSPECT_JSON = JSON.stringify({
   id: "company-test-import",
   profileMode: "prospect",
@@ -144,4 +203,41 @@ test("store normalizes sparse prospect profiles loaded from persistence", () => 
   assert.deepEqual(company.classifications.cnae, []);
   assert.equal(company.geography.display, "");
   assert.deepEqual(store.getState().opportunities, []);
+});
+
+test("large PLACSP corpora stay out of localStorage while saved source ids remain persisted", () => {
+  const storageAdapter = createMockStorageAdapter();
+  const store = createStore({ storageAdapter });
+  const sourceOpportunities = Array.from({ length: 1000 }, (_, index) => makePlacspOpportunity(index + 1));
+  const manualOpportunity = {
+    ...makePlacspOpportunity("manual-keep", {
+      sourceConnector: null,
+      id: "manual-opportunity",
+      title: "Manual opportunity"
+    }),
+    sourceOpportunityId: "manual-opportunity",
+    sourceNoticeVersionId: "manual-opportunity-version",
+    sources: [
+      {
+        id: "src-manual-opportunity",
+        organisation: "Manual import",
+        title: "Manual structured import",
+        url: "https://example.com/manual"
+      }
+    ]
+  };
+
+  store.replace({
+    ...store.getState(),
+    opportunities: [...sourceOpportunities, manualOpportunity],
+    savedOpportunityIds: [sourceOpportunities[0].id, "manual-opportunity"]
+  });
+
+  const raw = storageAdapter.readRaw();
+  const parsed = JSON.parse(raw);
+
+  assert.equal(parsed.opportunities.length, 1);
+  assert.equal(parsed.opportunities[0].id, "manual-opportunity");
+  assert.deepEqual(parsed.savedOpportunityIds, [sourceOpportunities[0].id, "manual-opportunity"]);
+  assert.doesNotMatch(raw, /PLACSP test opportunity 1000/);
 });

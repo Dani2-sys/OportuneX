@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed
+  xmlns="http://www.w3.org/2005/Atom"
+  xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+  xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2">
+  <id>https://contrataciondelestado.es/sindicacion/descriptive.atom</id>
+  <updated>2026-08-12T07:00:00+02:00</updated>
+  <link rel="self" href="https://contrataciondelestado.es/sindicacion/descriptive.atom" />
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-desc-001</id>
+    <title>Grant-like contract dossier with descriptive deadline</title>
+    <summary>The exact submission time is described in free text only.</summary>
+    <updated>2026-08-12T07:00:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-desc-001" />
+    <cac-place-ext:ContractFolderStatus>
+      <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+      <cbc:ContractFolderID>REF-DESC-001</cbc:ContractFolderID>
+      <cac:ProcurementProject>
+        <cbc:Name>Grant-like contract dossier with descriptive deadline</cbc:Name>
+        <cac:BudgetAmount>
+          <cbc:EstimatedOverallContractAmount currencyID="EUR">5989390,79</cbc:EstimatedOverallContractAmount>
+          <cbc:TaxExclusiveAmount currencyID="EUR">5989390.79</cbc:TaxExclusiveAmount>
+          <cbc:TotalAmount currencyID="EUR">7247162,86</cbc:TotalAmount>
+        </cac:BudgetAmount>
+      </cac:ProcurementProject>
+      <cac:TenderingProcess>
+        <cac:TenderSubmissionDeadlinePeriod>
+          <cbc:Description>Presentation according to the administrative clauses published in the dossier.</cbc:Description>
+        </cac:TenderSubmissionDeadlinePeriod>
+      </cac:TenderingProcess>
+      <cac:TenderingTerms>
+        <cac:TendererQualificationRequest>
+          <cbc:Description>ROLECE or equivalent classification evidence is required.</cbc:Description>
+        </cac:TendererQualificationRequest>
+      </cac:TenderingTerms>
+    </cac-place-ext:ContractFolderStatus>
+  </entry>
+</feed>

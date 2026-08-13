@@ -28,7 +28,7 @@ export const DEFAULT_RUNTIME = {
     reasoningEffort: "medium"
   },
   connectors: {
-    placsp: "planned",
+    placsp: "ready",
     bdns: "planned",
     ted: "planned"
   },

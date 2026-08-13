@@ -740,9 +740,10 @@ export function createDemoState() {
       {
         id: "sync-placsp",
         source: "PLACSP",
-        status: "planned",
+        connector: "placsp",
+        status: "ready",
         lastRun: null,
-        note: "Connector scaffolded for Phase 1."
+        note: "Read-only PLACSP connector ready for manual sync."
       },
       {
         id: "sync-bdns",

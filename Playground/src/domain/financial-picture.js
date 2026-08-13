@@ -53,6 +53,23 @@ function labelForAmountType(amountType, fallback, { explicitLotEvidence = false 
   }
 }
 
+function labelForPublishedLotMoney(lot, money) {
+  switch (money?.amountType) {
+    case "relevant_lot_value":
+      return `Relevant ${lot.title}`;
+    case "estimated_value":
+      return `${lot.title} estimated contract value`;
+    case "base_budget":
+      return `${lot.title} base / tender budget`;
+    case "whole_procedure_value":
+      return `${lot.title} procedure value`;
+    case "award_value":
+      return `${lot.title} awarded value`;
+    default:
+      return lot.title;
+  }
+}
+
 export function buildFinancialPicture(opportunity, lot = null) {
   if (opportunity.type === "grant") {
     const lines = compact([
@@ -103,7 +120,7 @@ export function buildFinancialPicture(opportunity, lot = null) {
     null;
   const hasLotSpecificPrimary = explicitLotEvidence;
   const primaryLabel = primarySource === "published_lot"
-    ? `Relevant ${publishedLot.title}`
+    ? labelForPublishedLotMoney(publishedLot, primaryMoney)
     : primarySource === "relevant_value"
       ? (explicitLotEvidence ? "Relevant lot value" : "Published contract value")
       : labelForAmountType(primaryMoney?.amountType, "Published contract value", { explicitLotEvidence });

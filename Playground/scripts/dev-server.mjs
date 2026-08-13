@@ -15,6 +15,7 @@ import {
   extractResponseText,
   validateVerificationResult
 } from "./openai-verification.mjs";
+import { PlacspSyncError, syncPlacspFeed } from "./connectors/placsp-client.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -337,6 +338,39 @@ async function handleApi(request, response) {
       return sendJson(response, 200, result);
     } catch (error) {
       return sendJson(response, error.statusCode ?? 500, buildErrorResponse(error));
+    }
+  }
+
+  if (request.url === "/api/connectors/placsp/sync" && request.method === "POST") {
+    let payload;
+    try {
+      payload = await readJsonBody(request);
+    } catch (error) {
+      return sendJson(response, error.statusCode ?? 400, buildErrorResponse(error));
+    }
+
+    try {
+      const result = await syncPlacspFeed({
+        maxPages: payload?.maxPages
+      });
+      return sendJson(response, 200, result);
+    } catch (error) {
+      const placspError =
+        error instanceof PlacspSyncError
+          ? error
+          : new PlacspSyncError(
+              500,
+              "placsp_sync_failed",
+              "PLACSP synchronization failed unexpectedly.",
+              error.message ?? "Unexpected PLACSP sync failure."
+            );
+      return sendJson(response, placspError.statusCode ?? 500, {
+        error: {
+          code: placspError.code,
+          message: placspError.message,
+          adminMessage: placspError.adminMessage
+        }
+      });
     }
   }
 

@@ -52,8 +52,11 @@ import {
 } from "./domain/ai-review.js";
 import { importCompanyProfileFromJson } from "./services/company-importer.js";
 import { importOpportunityFromJson, importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
+import { runPlacspSync } from "./services/placsp-sync.js";
+import { isPlacspSourceOpportunity, mergeSourceOpportunities } from "./services/source-opportunity-cache.js";
 import { runAiVerification } from "./services/ai-client.js";
-import { clamp, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
+import { serializeStateForPersistence } from "./state/store.js";
+import { clamp, clone, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
 
 const OPPORTUNITY_SCOPES = [
   { id: "worth_attention", label: "Worth your attention" },
@@ -121,6 +124,8 @@ const UI_STATE_DEFAULTS = {
   draftAnswers: {},
   companyImportDraft: "",
   opportunityJsonDraft: "",
+  placspMaxPages: 1,
+  placspSyncing: false,
   formFeedback: {
     companyImport: null,
     opportunityJsonImport: null
@@ -216,6 +221,146 @@ function requirementStatusLabel(row) {
 
 function getAiStatusMeta(ai = {}) {
   return AI_STATUS_COPY[ai.status] ?? AI_STATUS_COPY.unavailable;
+}
+
+function normalizePlacspMaxPages(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.min(5, Math.max(1, Math.round(parsed)));
+}
+
+function isPlacspSyncRun(run) {
+  const connector = run?.connector?.toString?.().toLowerCase?.() ?? "";
+  const source = run?.source?.toString?.().toLowerCase?.() ?? "";
+  return connector === "placsp" || source === "placsp";
+}
+
+function getLatestPlacspSyncRun(state) {
+  return (state.sourceSyncRuns ?? [])
+    .filter(isPlacspSyncRun)
+    .slice()
+    .sort((left, right) =>
+      String(right.completedAt ?? right.lastRun ?? right.startedAt ?? "").localeCompare(
+        String(left.completedAt ?? left.lastRun ?? left.startedAt ?? "")
+      )
+    )[0] ?? null;
+}
+
+function toneForSourceStatus(status) {
+  if (status === "healthy" || status === "ready") return "good";
+  if (status === "planned" || status === "syncing") return "warn";
+  return "bad";
+}
+
+function formatSourceRunMoment(run) {
+  return run?.completedAt ?? run?.lastRun ?? run?.startedAt ?? null;
+}
+
+function mergeEvidenceRecords(existing = [], incoming = []) {
+  const records = new Map();
+  [...existing, ...incoming].forEach((item) => {
+    if (!item?.id) return;
+    records.set(item.id, item);
+  });
+  return [...records.values()];
+}
+
+function applyPlacspTombstonePatch(existingOpportunity, patch) {
+  return {
+    ...existingOpportunity,
+    status: patch.status ?? existingOpportunity.status,
+    noticeType: patch.noticeType ?? existingOpportunity.noticeType,
+    cancellationStatus: patch.cancellationStatus ?? existingOpportunity.cancellationStatus,
+    sourceNoticeVersionId: patch.sourceNoticeVersionId ?? existingOpportunity.sourceNoticeVersionId,
+    lastChecked: patch.lastChecked ?? existingOpportunity.lastChecked,
+    sources: patch.sources?.length ? patch.sources : existingOpportunity.sources,
+    evidence: mergeEvidenceRecords(existingOpportunity.evidence ?? [], patch.evidence ?? [])
+  };
+}
+
+function prependSourceSyncRun(draft, run) {
+  draft.sourceSyncRuns = [run, ...(draft.sourceSyncRuns ?? [])].slice(0, 50);
+}
+
+function mergePlacspSyncResult(draft, payload) {
+  let inserted = 0;
+  let updated = 0;
+  let unchanged = 0;
+
+  (payload.opportunities ?? []).forEach((opportunity) => {
+    const existingIndex = draft.opportunities.findIndex((item) => item.id === opportunity.id);
+    if (existingIndex === -1) {
+      draft.opportunities.unshift(opportunity);
+      inserted += 1;
+      return;
+    }
+
+    const existing = draft.opportunities[existingIndex];
+    if (existing.sourceNoticeVersionId === opportunity.sourceNoticeVersionId) {
+      unchanged += 1;
+    } else {
+      updated += 1;
+    }
+    draft.opportunities.splice(existingIndex, 1, opportunity);
+  });
+
+  (payload.tombstones ?? []).forEach((patch) => {
+    const existingIndex = draft.opportunities.findIndex((item) => item.id === patch.id);
+    if (existingIndex === -1) return;
+    const nextOpportunity = applyPlacspTombstonePatch(draft.opportunities[existingIndex], patch);
+    if (draft.opportunities[existingIndex].sourceNoticeVersionId === nextOpportunity.sourceNoticeVersionId) {
+      unchanged += 1;
+    } else {
+      updated += 1;
+    }
+    draft.opportunities.splice(existingIndex, 1, nextOpportunity);
+  });
+
+  const run = {
+    id: uid("sync"),
+    connector: "placsp",
+    source: "PLACSP",
+    status: "healthy",
+    startedAt: payload.startedAt ?? payload.fetchedAt ?? new Date().toISOString(),
+    completedAt: payload.completedAt ?? payload.fetchedAt ?? new Date().toISOString(),
+    lastRun: payload.completedAt ?? payload.fetchedAt ?? new Date().toISOString(),
+    note: "Official PLACSP sync completed.",
+    pagesFetched: payload.pagesFetched ?? 0,
+    entriesSeen: payload.entriesSeen ?? 0,
+    uniqueEntries: payload.uniqueEntries ?? 0,
+    tombstonesSeen: payload.tombstonesSeen ?? 0,
+    opportunitiesInserted: inserted,
+    opportunitiesUpdated: updated,
+    unchanged,
+    sourceFeedUpdated: payload.feedUpdated ?? null,
+    errors: (payload.parserErrors ?? []).map((item) => item.message ?? String(item))
+  };
+  prependSourceSyncRun(draft, run);
+  return run;
+}
+
+function buildPlacspFailureRun(error, maxPages) {
+  const now = new Date().toISOString();
+  return {
+    id: uid("sync"),
+    connector: "placsp",
+    source: "PLACSP",
+    status: "error",
+    startedAt: now,
+    completedAt: now,
+    lastRun: now,
+    note: "Official PLACSP sync failed.",
+    pagesRequested: maxPages,
+    pagesFetched: 0,
+    entriesSeen: 0,
+    uniqueEntries: 0,
+    tombstonesSeen: 0,
+    opportunitiesInserted: 0,
+    opportunitiesUpdated: 0,
+    unchanged: 0,
+    sourceFeedUpdated: null,
+    errors: [error?.message ?? "Unknown PLACSP sync error."]
+  };
 }
 
 function resetUiState() {
@@ -568,6 +713,65 @@ function renderPersistenceBanner(persistence) {
       <strong>${escapeHtml(meta.label)}</strong>
       <p>${escapeHtml(meta.detail)}</p>
       ${getPersistenceErrorMessage(persistence) ? `<small>${escapeHtml(getPersistenceErrorMessage(persistence))}</small>` : ""}
+    </div>
+  `;
+}
+
+function getSourceCacheErrorMessage(sourceCache) {
+  if (!sourceCache?.lastError) return "";
+  return typeof sourceCache.lastError === "string"
+    ? sourceCache.lastError
+    : sourceCache.lastError.message ?? "";
+}
+
+function getSourceCacheMeta(sourceCache = null) {
+  if (!sourceCache) {
+    return {
+      label: "Source cache inactive",
+      tone: "neutral",
+      detail: "No source-cache service is configured for this app instance.",
+      showBanner: false
+    };
+  }
+
+  if (sourceCache.status === "unavailable" || sourceCache.mode === "memory_only") {
+    return {
+      label: "Source cache memory-only",
+      tone: "warn",
+      detail:
+        sourceCache.detail ??
+        "Source cache persistence is unavailable. PLACSP opportunities can still work for this session but may be lost after reload.",
+      showBanner: true
+    };
+  }
+
+  if (sourceCache.status === "error") {
+    return {
+      label: "Source cache warning",
+      tone: "warn",
+      detail:
+        sourceCache.detail ??
+        "Stored source opportunities could not be loaded safely. OportuneX continued with the local workspace state.",
+      showBanner: true
+    };
+  }
+
+  return {
+    label: sourceCache.lastSavedAt ? "Source cache persisted" : "Source cache ready",
+    tone: "good",
+    detail: sourceCache.detail ?? "Source cache persistence is active for official connector opportunities.",
+    showBanner: false
+  };
+}
+
+function renderSourceCacheBanner(sourceCache) {
+  const meta = getSourceCacheMeta(sourceCache);
+  if (!meta.showBanner) return "";
+  return `
+    <div class="toast warn">
+      <strong>${escapeHtml(meta.label)}</strong>
+      <p>${escapeHtml(meta.detail)}</p>
+      ${getSourceCacheErrorMessage(sourceCache) ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>` : ""}
     </div>
   `;
 }
@@ -1693,26 +1897,111 @@ function renderLabPage(derived, persistence) {
   `;
 }
 
-function renderSourcesPage(state, runtime) {
+function renderSourcesPage(state, runtime, sourceCache) {
   const aiStatus = getAiStatusMeta(runtime.ai);
+  const placspRun = getLatestPlacspSyncRun(state);
+  const sourceCacheMeta = getSourceCacheMeta(sourceCache);
+  const placspCachedCount =
+    sourceCache?.counts?.placsp ??
+    state.opportunities.filter((item) => isPlacspSourceOpportunity(item)).length;
+  const placspStatusLabel = uiState.placspSyncing
+    ? "Syncing"
+    : placspRun?.status === "healthy"
+      ? "Last sync successful"
+      : placspRun?.status === "error"
+        ? "Error"
+        : runtime.connectors?.placsp === "ready"
+          ? "Ready"
+          : "Planned";
+  const placspStatusTone = uiState.placspSyncing
+    ? "warn"
+    : placspRun?.status === "healthy"
+      ? "good"
+      : placspRun?.status === "error"
+        ? "bad"
+        : runtime.connectors?.placsp === "ready"
+          ? "good"
+          : "warn";
+  const placspErrors = placspRun?.errors ?? [];
+  const secondaryRuns = (state.sourceSyncRuns ?? []).filter((run) => !isPlacspSyncRun(run));
   return `
     <section class="page-grid">
       <article class="card">
         <div class="section-heading">
           <h2>Data sources</h2>
-          <p>Phase 0 uses the same normalized model the live connectors will feed later.</p>
+          <p>Manual admin syncs keep source ingestion controlled, read-only and visible.</p>
         </div>
         <div class="source-grid">
-          ${(state.sourceSyncRuns ?? [])
+          <article class="source-card">
+            <div class="card-topline">
+              ${pill("PLACSP", "neutral")}
+              ${pill(placspStatusLabel, placspStatusTone)}
+            </div>
+            <p>Official Spanish public procurement feed from the Plataforma de Contratacion del Sector Publico.</p>
+            <small>
+              ${placspRun ? `Last synchronized ${escapeHtml(formatLastChecked(formatSourceRunMoment(placspRun)))}` : "No PLACSP sync has completed yet."}
+            </small>
+            <br />
+            <small>
+              ${placspRun?.sourceFeedUpdated ? `Last feed update ${escapeHtml(formatLastChecked(placspRun.sourceFeedUpdated))}` : "Feed update timestamp not available yet."}
+            </small>
+            <ul class="tight-list">
+              <li>Source cache: ${escapeHtml(sourceCacheMeta.label)}</li>
+              <li>Cached opportunities: ${placspCachedCount}</li>
+              <li>Pages fetched: ${placspRun?.pagesFetched ?? 0}</li>
+              <li>Entries processed: ${placspRun?.entriesSeen ?? 0}</li>
+              <li>Unique procurements: ${placspRun?.uniqueEntries ?? 0}</li>
+              <li>Inserted: ${placspRun?.opportunitiesInserted ?? 0}</li>
+              <li>Updated: ${placspRun?.opportunitiesUpdated ?? 0}</li>
+              <li>Unchanged: ${placspRun?.unchanged ?? 0}</li>
+              <li>Tombstones: ${placspRun?.tombstonesSeen ?? 0}</li>
+            </ul>
+            <small>${escapeHtml(sourceCacheMeta.detail)}</small>
+            <br />
+            <small>
+              ${
+                sourceCache?.lastHydratedAt
+                  ? `Last cache hydration ${escapeHtml(formatLastChecked(sourceCache.lastHydratedAt))}${sourceCache?.hydrationMs != null ? ` (${sourceCache.hydrationMs} ms)` : ""}`
+                  : "Cache hydration has not completed yet."
+              }
+            </small>
+            ${
+              sourceCache?.lastSavedAt
+                ? `
+                    <br />
+                    <small>Last cache write ${escapeHtml(formatLastChecked(sourceCache.lastSavedAt))}</small>
+                  `
+                : ""
+            }
+            ${placspErrors.length ? `<small>${escapeHtml(placspErrors[0])}</small>` : ""}
+            ${getSourceCacheErrorMessage(sourceCache) ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>` : ""}
+            <div class="form-actions">
+              <label>
+                Pages
+                <select data-control="placsp-pages" ${uiState.placspSyncing ? "disabled" : ""}>
+                  ${[1, 2, 3, 4, 5]
+                    .map(
+                      (value) =>
+                        `<option value="${value}" ${uiState.placspMaxPages === value ? "selected" : ""}>${value}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+              <button class="button-primary" data-action="sync-placsp" ${uiState.placspSyncing ? "disabled" : ""}>
+                ${uiState.placspSyncing ? "Syncing PLACSP..." : "Sync PLACSP"}
+              </button>
+            </div>
+          </article>
+          ${secondaryRuns
             .map(
               (run) => `
                 <article class="source-card">
                   <div class="card-topline">
                     ${pill(run.source, "neutral")}
-                    ${pill(run.status, run.status === "healthy" ? "good" : run.status === "planned" ? "warn" : "bad")}
+                    ${pill(run.status, toneForSourceStatus(run.status))}
                   </div>
                   <p>${escapeHtml(run.note)}</p>
-                  <small>${run.lastRun ? `Last run ${escapeHtml(formatLastChecked(run.lastRun))}` : "No run yet"}</small>
+                  <small>${formatSourceRunMoment(run) ? `Last run ${escapeHtml(formatLastChecked(formatSourceRunMoment(run)))}` : "No run yet"}</small>
                 </article>
               `
             )
@@ -1808,10 +2097,11 @@ function renderEvaluationPage(derived) {
   `;
 }
 
-function renderHealthPage(state, runtime, derived, persistence) {
-  const footprint = Math.round(JSON.stringify(state).length / 1024);
+function renderHealthPage(state, runtime, derived, persistence, sourceCache) {
+  const footprint = Math.round(JSON.stringify(serializeStateForPersistence(state)).length / 1024);
   const aiStatus = getAiStatusMeta(runtime.ai);
   const persistenceMeta = getPersistenceMeta(persistence);
+  const sourceCacheMeta = getSourceCacheMeta(sourceCache);
   return `
     <section class="page-grid">
       <div class="card-grid five">
@@ -1840,7 +2130,7 @@ function renderHealthPage(state, runtime, derived, persistence) {
           </div>
           <div>
             <strong>Connector posture</strong>
-            <p>${state.sourceSyncRuns.filter((item) => item.status === "healthy").length} healthy, ${state.sourceSyncRuns.filter((item) => item.status === "planned").length} planned.</p>
+            <p>${state.sourceSyncRuns.filter((item) => item.status === "healthy" || item.status === "ready").length} healthy, ${state.sourceSyncRuns.filter((item) => item.status === "planned").length} planned.</p>
           </div>
           <div>
             <strong>Persistence</strong>
@@ -1850,6 +2140,17 @@ function renderHealthPage(state, runtime, derived, persistence) {
                 ? `<small>Last saved ${escapeHtml(formatDate(persistence.lastSavedAt, { includeTime: true }))}</small>`
                 : getPersistenceErrorMessage(persistence)
                   ? `<small>${escapeHtml(getPersistenceErrorMessage(persistence))}</small>`
+                  : ""
+            }
+          </div>
+          <div>
+            <strong>Source cache</strong>
+            <p>${escapeHtml(sourceCacheMeta.detail)}</p>
+            ${
+              sourceCache?.lastHydratedAt
+                ? `<small>Last hydrated ${escapeHtml(formatDate(sourceCache.lastHydratedAt, { includeTime: true }))}${sourceCache?.hydrationMs != null ? ` · ${sourceCache.hydrationMs} ms` : ""}</small>`
+                : getSourceCacheErrorMessage(sourceCache)
+                  ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>`
                   : ""
             }
           </div>
@@ -2303,10 +2604,11 @@ function renderDebugTab(opportunity, match, aiReview) {
   `;
 }
 
-function layout(content, runtime, derived, persistence) {
+function layout(content, runtime, derived, persistence, sourceCache) {
   const aiStatus = getAiStatusMeta(runtime.ai);
   const profileMode = getProfileMode(derived.company);
   const persistenceMeta = getPersistenceMeta(persistence);
+  const sourceCacheMeta = getSourceCacheMeta(sourceCache);
   const adminRoute = ADMIN_NAV_ITEMS.some((item) => item.id === uiState.route);
   const customerAiTone = aiStatus.tone === "good" || aiStatus.tone === "neutral" ? "neutral" : aiStatus.tone;
   const messageToneClass =
@@ -2333,6 +2635,7 @@ function layout(content, runtime, derived, persistence) {
             ${adminRoute ? pill(aiStatus.shortLabel, aiStatus.tone) : pill(aiStatus.shortLabel, customerAiTone)}
             ${adminRoute ? pill(runtime.appPhase ?? "phase-unknown", "neutral") : ""}
             ${adminRoute ? pill(persistenceMeta.label, persistenceMeta.tone) : ""}
+            ${adminRoute && sourceCache ? pill(sourceCacheMeta.label, sourceCacheMeta.tone) : ""}
             ${pill(profileMode === "prospect" ? "Prospect profile" : "Confirmed company", "neutral")}
             ${pill(`${derived.portfolio.counts.worthAttention} worth attention`, derived.portfolio.counts.worthAttention ? "good" : "neutral")}
             ${pill(`${derived.portfolio.counts.needsVerification} need verification`, derived.portfolio.counts.needsVerification ? "warn" : "neutral")}
@@ -2341,6 +2644,7 @@ function layout(content, runtime, derived, persistence) {
         </header>
         ${uiState.message ? `<div class="${messageClasses.join(" ")}">${escapeHtml(uiState.message)}</div>` : ""}
         ${renderPersistenceBanner(persistence)}
+        ${renderSourceCacheBanner(sourceCache)}
         ${renderProfileModeBanner(derived.company)}
         ${content}
       </main>
@@ -2348,7 +2652,7 @@ function layout(content, runtime, derived, persistence) {
   `;
 }
 
-function renderRoute(route, state, runtime, derived, persistence) {
+function renderRoute(route, state, runtime, derived, persistence, sourceCache) {
   switch (route) {
     case "opportunities":
       return renderOpportunityList(derived, persistence);
@@ -2359,13 +2663,13 @@ function renderRoute(route, state, runtime, derived, persistence) {
     case "lab":
       return renderLabPage(derived, persistence);
     case "sources":
-      return renderSourcesPage(state, runtime);
+      return renderSourcesPage(state, runtime, sourceCache);
     case "debug":
       return renderDebugPage(derived, persistence);
     case "evaluation":
       return renderEvaluationPage(derived);
     case "health":
-      return renderHealthPage(state, runtime, derived, persistence);
+      return renderHealthPage(state, runtime, derived, persistence, sourceCache);
     default:
       return renderOverview(derived, persistence);
   }
@@ -2427,13 +2731,81 @@ function answerQuestion(store, company, questionId, answer) {
 export function startApp(root, { runtime, store, services = {} }) {
   resetUiState();
   const aiVerificationService = services.runAiVerification ?? runAiVerification;
+  const placspSyncService = services.runPlacspSync ?? runPlacspSync;
+  const sourceCacheService = services.sourceCache ?? null;
+  let sourceCacheStatus = sourceCacheService?.getStatus?.() ?? null;
+
+  if (sourceCacheService?.subscribe) {
+    sourceCacheService.subscribe((nextStatus) => {
+      sourceCacheStatus = nextStatus;
+      render();
+    });
+  }
+
   function render() {
     const state = store.getState();
     const persistence = store.getPersistenceStatus();
     const derived = getDerived(state, runtime);
-    const content = renderRoute(uiState.route, state, runtime, derived, persistence);
-    root.innerHTML = layout(content, runtime, derived, persistence);
+    const content = renderRoute(uiState.route, state, runtime, derived, persistence, sourceCacheStatus);
+    root.innerHTML = layout(content, runtime, derived, persistence, sourceCacheStatus);
   }
+
+  async function hydratePlacspSourceCache() {
+    if (!sourceCacheService) {
+      return {
+        ok: true,
+        count: 0,
+        durationMs: 0
+      };
+    }
+
+    const currentState = store.getState();
+    const legacyPlacspOpportunities = currentState.opportunities.filter((item) => isPlacspSourceOpportunity(item));
+
+    if (legacyPlacspOpportunities.length) {
+      await sourceCacheService.upsertMany("placsp", legacyPlacspOpportunities);
+      sourceCacheStatus = sourceCacheService.getStatus();
+    }
+
+    const loadResult = await sourceCacheService.loadByConnector("placsp");
+    sourceCacheStatus = sourceCacheService.getStatus();
+
+    if (!loadResult.ok) {
+      render();
+      return loadResult;
+    }
+
+    const nextState = clone(store.getState());
+    nextState.opportunities = mergeSourceOpportunities(nextState.opportunities, "placsp", loadResult.opportunities);
+    store.replace(nextState);
+    return loadResult;
+  }
+
+  render();
+  const sourceCacheReady = hydratePlacspSourceCache()
+    .catch((error) => {
+      sourceCacheStatus = {
+        ...(sourceCacheStatus ?? {}),
+        status: "error",
+        mode: sourceCacheStatus?.mode ?? "indexeddb",
+        detail: "Stored source opportunities could not be loaded. OportuneX continued with the local workspace state for this session.",
+        lastError: {
+          code: "SOURCE_CACHE_LOAD_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+          operation: "load",
+          connector: "placsp",
+          at: new Date().toISOString()
+        }
+      };
+      return {
+        ok: false,
+        code: "SOURCE_CACHE_LOAD_FAILED",
+        message: error instanceof Error ? error.message : String(error)
+      };
+    })
+    .finally(() => {
+      render();
+    });
 
   root.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-action]");
@@ -2468,6 +2840,58 @@ export function startApp(root, { runtime, store, services = {} }) {
     if (action === "tab") {
       uiState.detailTab = button.dataset.tab;
       render();
+      return;
+    }
+
+    if (action === "sync-placsp") {
+      if (uiState.placspSyncing) return;
+      uiState.placspSyncing = true;
+      setMessage(`Syncing PLACSP (${uiState.placspMaxPages} page${uiState.placspMaxPages === 1 ? "" : "s"})...`, "info", "compact");
+      render();
+
+      try {
+        const payload = await placspSyncService({
+          maxPages: uiState.placspMaxPages
+        });
+        const nextState = clone(store.getState());
+        const syncRun = mergePlacspSyncResult(nextState, payload);
+        nextState.auditEvents = [
+          makeAudit("PLACSP sync completed", `Fetched ${payload.pagesFetched} page(s) and normalised ${payload.uniqueEntries} unique procurements.`),
+          ...(nextState.auditEvents ?? [])
+        ].slice(0, 50);
+
+        let cacheResult = { ok: true };
+        if (sourceCacheService) {
+          const placspOpportunities = nextState.opportunities.filter((item) => isPlacspSourceOpportunity(item));
+          cacheResult = await sourceCacheService.upsertMany("placsp", placspOpportunities);
+          sourceCacheStatus = sourceCacheService.getStatus();
+        }
+
+        store.replace(nextState);
+        const persistenceStatus = store.getPersistenceStatus();
+        const workspacePersisted = persistenceStatus.status === "available";
+        const sourceCachePersisted = !sourceCacheService || cacheResult.ok === true;
+        let message = `PLACSP sync completed: ${syncRun.opportunitiesInserted} inserted, ${syncRun.opportunitiesUpdated} updated, ${syncRun.unchanged} unchanged.`;
+        if (!sourceCachePersisted && workspacePersisted) {
+          message += " Source cache persistence is unavailable, so these PLACSP records may be lost after reload.";
+        } else if (sourceCachePersisted && !workspacePersisted) {
+          message += " Source records were cached, but workspace persistence is unavailable for some local user state.";
+        } else if (!sourceCachePersisted && !workspacePersisted) {
+          message += " Browser persistence is unavailable for both the workspace and the source cache.";
+        }
+        setMessage(
+          message,
+          workspacePersisted && sourceCachePersisted ? "success" : "warn"
+        );
+      } catch (error) {
+        store.update((draft) => {
+          prependSourceSyncRun(draft, buildPlacspFailureRun(error, uiState.placspMaxPages));
+        }, makeAudit("PLACSP sync failed", error?.message ?? "Unknown PLACSP sync error."));
+        setMessage(error?.message ?? "PLACSP sync failed.", "error");
+      } finally {
+        uiState.placspSyncing = false;
+        render();
+      }
       return;
     }
 
@@ -2612,6 +3036,11 @@ export function startApp(root, { runtime, store, services = {} }) {
       }, makeAudit("Active company switched", `Switched active company to ${element.value}.`));
       uiState.detailTab = uiState.route === "debug" ? "debug" : "report";
       setMessage("Active company changed.", "info", "compact");
+      render();
+      return;
+    }
+    if (element?.dataset?.control === "placsp-pages") {
+      uiState.placspMaxPages = normalizePlacspMaxPages(element.value);
       render();
       return;
     }
@@ -2923,5 +3352,9 @@ export function startApp(root, { runtime, store, services = {} }) {
     }
   });
 
-  render();
+  return {
+    whenSourceCacheReady() {
+      return sourceCacheReady;
+    }
+  };
 }

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed
+  xmlns="http://www.w3.org/2005/Atom"
+  xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+  xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2">
+  <id>https://contrataciondelestado.es/sindicacion/malformed.atom</id>
+  <updated>2026-08-12T09:00:00+02:00</updated>
+  <link rel="self" href="https://contrataciondelestado.es/sindicacion/malformed.atom" />
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-good-001</id>
+    <title>Valid entry alongside malformed one</title>
+    <summary>Only the well-formed entry should survive parsing.</summary>
+    <updated>2026-08-12T09:00:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-good-001" />
+    <cac-place-ext:ContractFolderStatus>
+      <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+      <cbc:ContractFolderID>REF-GOOD-001</cbc:ContractFolderID>
+      <cac:ProcurementProject>
+        <cbc:Name>Valid entry alongside malformed one</cbc:Name>
+      </cac:ProcurementProject>
+    </cac-place-ext:ContractFolderStatus>
+  </entry>
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-bad-001</id>
+    <title>Malformed entry without contract folder status</title>
+    <summary>This entry should be reported as a recoverable parser error.</summary>
+    <updated>2026-08-12T08:00:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-bad-001" />
+  </entry>
+</feed>

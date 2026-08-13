@@ -1,1 +1,1 @@
-export const APP_PHASE = "phase-0.3.3";
+export const APP_PHASE = "phase-0.4";

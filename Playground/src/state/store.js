@@ -1,6 +1,7 @@
 import { clone } from "../utils.js";
 import { createDemoState } from "../data/demo.js";
 import { normalizeAiRun } from "../domain/ai-review.js";
+import { isPlacspSourceOpportunity } from "../services/source-opportunity-cache.js";
 
 const STORAGE_KEY = "oportunex.phase0.store.v1";
 const PERSISTENCE_AVAILABLE_DETAIL = "Browser-local persistence is active.";
@@ -8,6 +9,8 @@ const PERSISTENCE_UNAVAILABLE_DETAIL =
   "Browser persistence is unavailable. Changes will work for this session but may be lost after reload.";
 const PERSISTENCE_LOAD_ERROR_DETAIL =
   "Saved browser-local data could not be loaded. OportuneX continued in memory with the demo workspace for this session.";
+const AUDIT_EVENT_RETENTION = 50;
+const SOURCE_SYNC_RUN_RETENTION = 50;
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -129,6 +132,7 @@ function normalizeOpportunity(opportunity = {}, index = 0) {
   const type = opportunity?.type === "grant" ? "grant" : "contract";
   return {
     id: opportunity?.id ?? `opportunity-${index + 1}`,
+    sourceConnector: opportunity?.sourceConnector ?? null,
     canonicalId: opportunity?.canonicalId ?? null,
     sourceOpportunityId: opportunity?.sourceOpportunityId ?? opportunity?.id ?? `source-opportunity-${index + 1}`,
     sourceNoticeVersionId:
@@ -198,7 +202,6 @@ export function normalizeState(input) {
   const companyProfiles = sanitizeArray(input.companyProfiles).map(normalizeCompanyProfile).filter(Boolean);
   if (!companyProfiles.length) return normalizeState(createDemoState());
   const opportunities = sanitizeArray(input.opportunities).map(normalizeOpportunity);
-  const opportunityIds = new Set(opportunities.map((item) => item.id));
 
   return {
     organisations: sanitizeArray(input.organisations),
@@ -208,13 +211,13 @@ export function normalizeState(input) {
         ? input.activeCompanyId
         : companyProfiles[0].id,
     opportunities,
-    savedOpportunityIds: sanitizeArray(input.savedOpportunityIds).filter((id) => opportunityIds.has(id)),
+    savedOpportunityIds: [...new Set(sanitizeArray(input.savedOpportunityIds).filter(Boolean))],
     pursuitStatuses: isPlainObject(input.pursuitStatuses) ? input.pursuitStatuses : {},
     feedback: sanitizeArray(input.feedback),
     aiRuns: sanitizeArray(input.aiRuns).map(normalizeAiRun),
     manualOverrides: sanitizeArray(input.manualOverrides),
-    auditEvents: sanitizeArray(input.auditEvents),
-    sourceSyncRuns: sanitizeArray(input.sourceSyncRuns)
+    auditEvents: sanitizeArray(input.auditEvents).slice(0, AUDIT_EVENT_RETENTION),
+    sourceSyncRuns: sanitizeArray(input.sourceSyncRuns).slice(0, SOURCE_SYNC_RUN_RETENTION)
   };
 }
 
@@ -469,7 +472,7 @@ export function createStore({ storageAdapter = createLocalStorageAdapter() } = {
       const next = clone(state);
       mutator(next);
       if (auditEvent) {
-        next.auditEvents = [auditEvent, ...(next.auditEvents ?? [])].slice(0, 50);
+        next.auditEvents = [auditEvent, ...(next.auditEvents ?? [])].slice(0, AUDIT_EVENT_RETENTION);
       }
       commit(next);
     },
@@ -486,7 +489,15 @@ export function loadState(storageAdapter = createLocalStorageAdapter()) {
   return loadStoreSnapshot(storageAdapter).state;
 }
 
-export function saveState(state, storageAdapter = createLocalStorageAdapter()) {
+export function serializeStateForPersistence(state) {
   const snapshot = normalizeState(state);
+  snapshot.opportunities = snapshot.opportunities.filter((item) => !isPlacspSourceOpportunity(item));
+  snapshot.auditEvents = snapshot.auditEvents.slice(0, AUDIT_EVENT_RETENTION);
+  snapshot.sourceSyncRuns = snapshot.sourceSyncRuns.slice(0, SOURCE_SYNC_RUN_RETENTION);
+  return snapshot;
+}
+
+export function saveState(state, storageAdapter = createLocalStorageAdapter()) {
+  const snapshot = serializeStateForPersistence(state);
   return saveToAdapter(storageAdapter, snapshot);
 }

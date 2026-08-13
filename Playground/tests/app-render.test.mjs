@@ -9,6 +9,10 @@ import { analyzePortfolio } from "../src/domain/analysis.js";
 import { parseSpanishDate } from "../src/domain/deadline.js";
 import { createMoney } from "../src/domain/money.js";
 import { importCompanyProfileFromJson } from "../src/services/company-importer.js";
+import {
+  createInMemorySourceCacheAdapter,
+  createSourceOpportunityCache
+} from "../src/services/source-opportunity-cache.js";
 import { createStore } from "../src/state/store.js";
 import { escapeHtml } from "../src/utils.js";
 
@@ -121,6 +125,35 @@ function makeNoLotUiOpportunity() {
     referenceNumber: "opp-ui-no-published-lots-ref",
     requiredDocuments: [],
     documents: []
+  };
+}
+
+function makeCachedPlacspOpportunity(overrides = {}) {
+  return {
+    ...makeNoLotUiOpportunity(),
+    id: overrides.id ?? "placsp:cached-ui-opportunity",
+    sourceConnector: "placsp",
+    sourceOpportunityId:
+      overrides.sourceOpportunityId ??
+      "https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/cached-ui-opportunity",
+    sourceNoticeVersionId: overrides.sourceNoticeVersionId ?? "placsp-version:cached-ui-opportunity",
+    title: overrides.title ?? "Cached PLACSP opportunity",
+    referenceNumber: overrides.referenceNumber ?? "PLACSP-CACHED-001",
+    sources: [
+      {
+        id: "placsp-ui-source-1",
+        organisation: "Plataforma de Contratacion del Sector Publico",
+        title: "Official PLACSP ATOM feed",
+        url: "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom",
+        official: true,
+        publishedAt: "2026-08-01",
+        lastChecked: "2026-08-08T10:00:00Z",
+        metadata: {
+          sourceType: "official_open_data_atom"
+        }
+      }
+    ],
+    ...overrides
   };
 }
 
@@ -751,6 +784,99 @@ test("customer opportunity markup escapes imported user-derived text", () => {
     assert.match(root.innerHTML, /Authority &lt;b&gt;danger&lt;\/b&gt;/);
     assert.doesNotMatch(root.innerHTML, /<script>alert\(1\)<\/script>/);
     assert.doesNotMatch(root.innerHTML, /<b>danger<\/b>/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("startup hydrates cached PLACSP opportunities and reconnects saved ids from localStorage", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const persistedState = createDemoState();
+    const cachedOpportunity = makeCachedPlacspOpportunity({
+      id: "placsp:cached-saved-opportunity",
+      title: "Cached saved PLACSP opportunity"
+    });
+    persistedState.opportunities = [];
+    persistedState.savedOpportunityIds = [cachedOpportunity.id];
+
+    const store = createStore({
+      storageAdapter: {
+        load() {
+          return { ok: true, value: JSON.stringify(persistedState) };
+        },
+        save(snapshot) {
+          return { ok: true, value: snapshot };
+        }
+      }
+    });
+    const sourceCache = createSourceOpportunityCache({
+      adapter: createInMemorySourceCacheAdapter()
+    });
+    await sourceCache.upsertMany("placsp", [cachedOpportunity]);
+
+    const root = createRoot();
+    const app = startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        sourceCache
+      }
+    });
+
+    await app.whenSourceCacheReady();
+    clickAction(root, { action: "route", route: "saved" });
+
+    assert.deepEqual(store.getState().savedOpportunityIds, [cachedOpportunity.id]);
+    assert.ok(store.getState().opportunities.some((item) => item.id === cachedOpportunity.id));
+    assert.match(root.innerHTML, /Cached saved PLACSP opportunity/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("source cache load failure leaves the workspace usable and shows a source-cache warning", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    const app = startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        sourceCache: createSourceOpportunityCache({
+          adapter: {
+            kind: "indexeddb",
+            async loadByConnector() {
+              return {
+                ok: false,
+                code: "SOURCE_CACHE_LOAD_FAILED",
+                message: "IndexedDB read failed"
+              };
+            },
+            async upsertMany() {
+              return { ok: true };
+            },
+            async count() {
+              return { ok: true, count: 0 };
+            },
+            async clearConnector() {
+              return { ok: true };
+            }
+          }
+        })
+      }
+    });
+
+    await app.whenSourceCacheReady();
+
+    assert.match(root.innerHTML, /Instalaciones Demo Tarragona SL/);
+    assert.match(root.innerHTML, /Stored source opportunities could not be loaded/i);
+    assert.match(root.innerHTML, /IndexedDB read failed/i);
   } finally {
     globalThis.window = previousWindow;
   }

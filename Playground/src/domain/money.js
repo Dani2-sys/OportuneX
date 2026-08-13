@@ -1,6 +1,86 @@
 import { clamp, formatNumber } from "../utils.js";
 import { getCompanyFact, getEmployeeRange, getFactValue, getProfileMode, getRangeValue, getTurnoverRange } from "./company-profile.js";
 
+function sanitizeMoneyText(raw) {
+  return raw
+    .toString()
+    .trim()
+    .replace(/[€\s]/g, "")
+    .replace(/[^\d,.\-+]/g, "");
+}
+
+export function moneyTextToMinor(raw) {
+  if (raw == null || raw === "") return null;
+  const sanitized = sanitizeMoneyText(raw);
+  if (!sanitized || !/[0-9]/.test(sanitized)) return null;
+
+  let sign = 1;
+  let numeric = sanitized;
+  if (numeric.startsWith("-")) {
+    sign = -1;
+    numeric = numeric.slice(1);
+  } else if (numeric.startsWith("+")) {
+    numeric = numeric.slice(1);
+  }
+
+  if (!numeric || !/^[\d.,]+$/.test(numeric)) return null;
+
+  const lastDot = numeric.lastIndexOf(".");
+  const lastComma = numeric.lastIndexOf(",");
+  const decimalIndex = Math.max(lastDot, lastComma);
+
+  let integerPart = numeric;
+  let fractionPart = "";
+
+  if (decimalIndex >= 0) {
+    const candidateFraction = numeric.slice(decimalIndex + 1);
+    const candidateInteger = numeric.slice(0, decimalIndex);
+    if (/^\d{1,2}$/.test(candidateFraction)) {
+      integerPart = candidateInteger;
+      fractionPart = candidateFraction;
+    }
+  }
+
+  integerPart = integerPart.replace(/[.,]/g, "");
+  if (!/^\d*$/.test(integerPart) || !/^\d*$/.test(fractionPart)) return null;
+  if (!integerPart && !fractionPart) return null;
+
+  const normalizedFraction = fractionPart.padEnd(2, "0").slice(0, 2);
+  const exactMinor = BigInt(integerPart || "0") * 100n + BigInt(normalizedFraction || "0");
+  const signedMinor = exactMinor * BigInt(sign);
+
+  if (signedMinor > BigInt(Number.MAX_SAFE_INTEGER) || signedMinor < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new Error("Money value exceeds safe integer precision.");
+  }
+
+  return Number(signedMinor);
+}
+
+export function createMoneyFromMinor({
+  amountMinor = 0,
+  currency = "EUR",
+  vatStatus = "unknown",
+  amountType = "generic",
+  source = "manual",
+  label = "",
+  original = ""
+} = {}) {
+  const minor = Number(amountMinor ?? 0);
+  if (!Number.isSafeInteger(minor)) {
+    throw new Error("amountMinor must be a safe integer.");
+  }
+
+  return {
+    amountMinor: minor,
+    currency,
+    vatStatus,
+    amountType,
+    source,
+    label,
+    original: original || (minor / 100).toString()
+  };
+}
+
 export function createMoney({
   major = 0,
   currency = "EUR",
@@ -10,7 +90,7 @@ export function createMoney({
   label = ""
 } = {}) {
   const minor = Math.round(Number(major || 0) * 100);
-  return {
+  return createMoneyFromMinor({
     amountMinor: minor,
     currency,
     vatStatus,
@@ -18,20 +98,21 @@ export function createMoney({
     source,
     label,
     original: major.toString()
-  };
+  });
+}
+
+export function createMoneyFromText(raw, options = {}) {
+  const amountMinor = moneyTextToMinor(raw);
+  if (amountMinor == null) return null;
+  return createMoneyFromMinor({
+    amountMinor,
+    original: raw.toString().trim(),
+    ...options
+  });
 }
 
 export function parseMoneyInput(raw, options = {}) {
-  if (raw == null || raw === "") return null;
-  const cleaned = raw
-    .toString()
-    .trim()
-    .replace(/[€\s]/g, "")
-    .replace(/\.(?=\d{3}(?:[.,]|$))/g, "")
-    .replace(",", ".");
-  const value = Number(cleaned);
-  if (!Number.isFinite(value)) return null;
-  return createMoney({ major: value, ...options });
+  return createMoneyFromText(raw, options);
 }
 
 export function moneyToMajor(money) {

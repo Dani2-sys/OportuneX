@@ -119,7 +119,7 @@ export function createRuntimeConfig(env = process.env) {
       reasoningEffort: env.OPORTUNEX_AI_REASONING_EFFORT || DEFAULT_AI_MODELS.reasoningEffort
     },
     connectors: {
-      placsp: "planned",
+      placsp: "ready",
       bdns: "planned",
       ted: "planned"
     },

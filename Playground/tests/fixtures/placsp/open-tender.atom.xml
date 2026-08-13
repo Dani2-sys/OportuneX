@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed
+  xmlns="http://www.w3.org/2005/Atom"
+  xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+  xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+  xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
+  xmlns:at="http://purl.org/atompub/tombstones/1.0">
+  <id>https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom</id>
+  <updated>2026-08-12T08:45:00+02:00</updated>
+  <link rel="self" href="https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom" />
+  <link rel="next" href="https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3-next.atom" />
+  <link rel="first" href="https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom" />
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/entry-open-001</id>
+    <title>Electrical maintenance services</title>
+    <summary>Preventive and corrective electrical maintenance across public buildings.</summary>
+    <updated>2026-08-12T08:45:00+02:00</updated>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=entry-open-001" />
+    <cac-place-ext:ContractFolderStatus>
+      <cbc-place-ext:ContractFolderStatusCode>PUB</cbc-place-ext:ContractFolderStatusCode>
+      <cbc:ContractFolderID>REF-OPEN-001</cbc:ContractFolderID>
+      <cac-place-ext:LocatedContractingParty>
+        <cbc:BuyerProfileURIID>https://contrataciondelestado.es/wps/poc?uri=profile-001</cbc:BuyerProfileURIID>
+        <cac:Party>
+          <cbc:WebsiteURI>https://authority.example.test</cbc:WebsiteURI>
+          <cac:PartyIdentification>
+            <cbc:ID schemeName="DIR3">L01234567</cbc:ID>
+          </cac:PartyIdentification>
+          <cac:PartyIdentification>
+            <cbc:ID schemeName="NIF">P1234567A</cbc:ID>
+          </cac:PartyIdentification>
+          <cac:PartyIdentification>
+            <cbc:ID schemeName="ID_PLATAFORMA">80001</cbc:ID>
+          </cac:PartyIdentification>
+          <cac:PartyName>
+            <cbc:Name>Ajuntament de Tarragona</cbc:Name>
+          </cac:PartyName>
+          <cac:Contact>
+            <cbc:Name>Procurement Office</cbc:Name>
+            <cbc:Telephone>977000111</cbc:Telephone>
+            <cbc:ElectronicMail>contractacio@example.test</cbc:ElectronicMail>
+          </cac:Contact>
+        </cac:Party>
+      </cac-place-ext:LocatedContractingParty>
+      <cac:ProcurementProject>
+        <cbc:Name>Electrical maintenance services</cbc:Name>
+        <cbc:TypeCode>2</cbc:TypeCode>
+        <cbc:SubTypeCode>5</cbc:SubTypeCode>
+        <cac:BudgetAmount>
+          <cbc:EstimatedOverallContractAmount currencyID="EUR">210000</cbc:EstimatedOverallContractAmount>
+          <cbc:TaxExclusiveAmount currencyID="EUR">198000</cbc:TaxExclusiveAmount>
+          <cbc:TotalAmount currencyID="EUR">239580</cbc:TotalAmount>
+        </cac:BudgetAmount>
+        <cac:RequiredCommodityClassification>
+          <cbc:ItemClassificationCode>50711000</cbc:ItemClassificationCode>
+        </cac:RequiredCommodityClassification>
+        <cac:RequiredCommodityClassification>
+          <cbc:ItemClassificationCode>45315300</cbc:ItemClassificationCode>
+        </cac:RequiredCommodityClassification>
+        <cac:RealizedLocation>
+          <cbc:CountrySubentity>Catalonia</cbc:CountrySubentity>
+          <cbc:CountrySubentityCode>ES514</cbc:CountrySubentityCode>
+          <cac:Address>
+            <cbc:CityName>Tarragona</cbc:CityName>
+          </cac:Address>
+        </cac:RealizedLocation>
+        <cac:PlannedPeriod>
+          <cbc:DurationMeasure unitCode="MON">12</cbc:DurationMeasure>
+        </cac:PlannedPeriod>
+      </cac:ProcurementProject>
+      <cac:TenderingTerms>
+        <cac:RequiredFinancialGuarantee>
+          <cbc:Description>Provisional guarantee waived.</cbc:Description>
+        </cac:RequiredFinancialGuarantee>
+        <cac:TendererQualificationRequest>
+          <cbc:Description>At least one comparable public maintenance contract is required.</cbc:Description>
+          <cac:TechnicalEvaluationCriteria>
+            <cbc:Description>Provide specialist electrical maintenance capability evidence.</cbc:Description>
+          </cac:TechnicalEvaluationCriteria>
+          <cac:FinancialEvaluationCriteria>
+            <cbc:Description>Minimum economic solvency applies as stated in the tender dossier.</cbc:Description>
+          </cac:FinancialEvaluationCriteria>
+          <cac:SpecificTendererRequirement>
+            <cbc:Description>Current public liability insurance must be evidenced.</cbc:Description>
+          </cac:SpecificTendererRequirement>
+        </cac:TendererQualificationRequest>
+      </cac:TenderingTerms>
+      <cac:TenderingProcess>
+        <cbc:ProcedureCode>ABIERTO</cbc:ProcedureCode>
+        <cbc:SubmissionMethodCode>electronic</cbc:SubmissionMethodCode>
+        <cac:TenderSubmissionDeadlinePeriod>
+          <cbc:EndDate>2026-08-29</cbc:EndDate>
+          <cbc:EndTime>14:00:00</cbc:EndTime>
+        </cac:TenderSubmissionDeadlinePeriod>
+        <cac:DocumentAvailabilityPeriod>
+          <cbc:EndDate>2026-08-20</cbc:EndDate>
+          <cbc:EndTime>12:00:00</cbc:EndTime>
+        </cac:DocumentAvailabilityPeriod>
+      </cac:TenderingProcess>
+      <cac:TenderRecipientParty>
+        <cac:Contact>
+          <cbc:Name>Electronic submissions desk</cbc:Name>
+          <cbc:ElectronicMail>submit@example.test</cbc:ElectronicMail>
+        </cac:Contact>
+      </cac:TenderRecipientParty>
+      <cac:LegalDocumentReference>
+        <cbc:ID>PCAP</cbc:ID>
+        <cbc:DocumentType>Plecs administratius</cbc:DocumentType>
+        <cac:Attachment>
+          <cbc:URI>https://contrataciondelestado.es/documents/pcap-open-001.pdf</cbc:URI>
+        </cac:Attachment>
+      </cac:LegalDocumentReference>
+      <cac:TechnicalDocumentReference>
+        <cbc:ID>PPT</cbc:ID>
+        <cbc:DocumentType>Plecs tecnics</cbc:DocumentType>
+        <cac:Attachment>
+          <cbc:URI>https://contrataciondelestado.es/documents/ppt-open-001.pdf</cbc:URI>
+        </cac:Attachment>
+      </cac:TechnicalDocumentReference>
+    </cac-place-ext:ContractFolderStatus>
+  </entry>
+</feed>
