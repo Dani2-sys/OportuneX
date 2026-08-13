@@ -351,6 +351,8 @@ async function handleApi(request, response) {
 
     try {
       const result = await syncPlacspFeed({
+        mode: payload?.mode,
+        cursor: payload?.cursor,
         maxPages: payload?.maxPages
       });
       return sendJson(response, 200, result);

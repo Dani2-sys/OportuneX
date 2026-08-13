@@ -53,7 +53,17 @@ import {
 import { importCompanyProfileFromJson } from "./services/company-importer.js";
 import { importOpportunityFromJson, importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
 import { runPlacspSync } from "./services/placsp-sync.js";
-import { isPlacspSourceOpportunity, mergeSourceOpportunities } from "./services/source-opportunity-cache.js";
+import {
+  createConnectorState,
+  isPlacspSourceOpportunity,
+  mergeSourceOpportunities
+} from "./services/source-opportunity-cache.js";
+import {
+  createConnectorRefreshScheduler,
+  getNextAutomaticRefreshAt,
+  isReconciliationDue
+} from "./services/connector-refresh-scheduler.js";
+import { createAnalysisCache } from "./services/analysis-cache.js";
 import { runAiVerification } from "./services/ai-client.js";
 import { serializeStateForPersistence } from "./state/store.js";
 import { clamp, clone, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
@@ -246,6 +256,35 @@ function getLatestPlacspSyncRun(state) {
     )[0] ?? null;
 }
 
+function placspRunModeLabel(mode) {
+  switch (mode) {
+    case "automatic":
+      return "Automatic";
+    case "incremental":
+      return "Incremental";
+    case "reconcile":
+      return "Reconciliation";
+    default:
+      return "Manual";
+  }
+}
+
+function buildPlacspRunNote(payload, runMode) {
+  if (payload?.feedChanged === false) {
+    return "Official PLACSP incremental check found no source changes.";
+  }
+  if (runMode === "reconcile") {
+    return "Official PLACSP recent reconciliation completed.";
+  }
+  if (runMode === "automatic") {
+    return "Official PLACSP automatic refresh completed.";
+  }
+  if (runMode === "incremental") {
+    return "Official PLACSP incremental refresh completed.";
+  }
+  return "Official PLACSP sync completed.";
+}
+
 function toneForSourceStatus(status) {
   if (status === "healthy" || status === "ready") return "good";
   if (status === "planned" || status === "syncing") return "warn";
@@ -265,6 +304,58 @@ function mergeEvidenceRecords(existing = [], incoming = []) {
   return [...records.values()];
 }
 
+function parsePlacspTimestamp(value) {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getPlacspSourceMetadata(opportunity) {
+  const sources = Array.isArray(opportunity?.sources) ? opportunity.sources : [];
+  const placspSource =
+    sources.find((source) => source?.metadata?.sourceType === "official_open_data_atom") ?? sources[0];
+  return placspSource?.metadata ?? {};
+}
+
+function getPlacspVersionTimeline(opportunity) {
+  const metadata = getPlacspSourceMetadata(opportunity);
+  const tombstoneAt = parsePlacspTimestamp(metadata.tombstoneWhen);
+  const entryUpdatedAt =
+    parsePlacspTimestamp(metadata.atomUpdated) ?? parsePlacspTimestamp(opportunity?.modificationDate);
+  const latestAt =
+    Number.isFinite(tombstoneAt) && Number.isFinite(entryUpdatedAt)
+      ? Math.max(tombstoneAt, entryUpdatedAt)
+      : tombstoneAt ?? entryUpdatedAt;
+  return {
+    tombstoneAt,
+    entryUpdatedAt,
+    latestAt
+  };
+}
+
+function shouldPreserveExistingPlacspOpportunity(existingOpportunity, nextOpportunity) {
+  if (!isPlacspSourceOpportunity(existingOpportunity) || !isPlacspSourceOpportunity(nextOpportunity)) {
+    return false;
+  }
+
+  const existingTimeline = getPlacspVersionTimeline(existingOpportunity);
+  const nextTimeline = getPlacspVersionTimeline(nextOpportunity);
+
+  if (Number.isFinite(existingTimeline.latestAt) && !Number.isFinite(nextTimeline.latestAt)) {
+    return true;
+  }
+
+  if (Number.isFinite(existingTimeline.tombstoneAt) && !Number.isFinite(nextTimeline.tombstoneAt)) {
+    if (!Number.isFinite(nextTimeline.entryUpdatedAt)) return true;
+    return existingTimeline.tombstoneAt >= nextTimeline.entryUpdatedAt;
+  }
+
+  if (!Number.isFinite(existingTimeline.latestAt) || !Number.isFinite(nextTimeline.latestAt)) {
+    return false;
+  }
+
+  return existingTimeline.latestAt > nextTimeline.latestAt;
+}
+
 function applyPlacspTombstonePatch(existingOpportunity, patch) {
   return {
     ...existingOpportunity,
@@ -282,7 +373,7 @@ function prependSourceSyncRun(draft, run) {
   draft.sourceSyncRuns = [run, ...(draft.sourceSyncRuns ?? [])].slice(0, 50);
 }
 
-function mergePlacspSyncResult(draft, payload) {
+function mergePlacspSyncResult(draft, payload, runMode = payload?.mode ?? "manual") {
   let inserted = 0;
   let updated = 0;
   let unchanged = 0;
@@ -296,6 +387,10 @@ function mergePlacspSyncResult(draft, payload) {
     }
 
     const existing = draft.opportunities[existingIndex];
+    if (shouldPreserveExistingPlacspOpportunity(existing, opportunity)) {
+      unchanged += 1;
+      return;
+    }
     if (existing.sourceNoticeVersionId === opportunity.sourceNoticeVersionId) {
       unchanged += 1;
     } else {
@@ -318,13 +413,18 @@ function mergePlacspSyncResult(draft, payload) {
 
   const run = {
     id: uid("sync"),
+    mode: runMode,
+    sourceMode: payload?.mode ?? null,
     connector: "placsp",
     source: "PLACSP",
     status: "healthy",
     startedAt: payload.startedAt ?? payload.fetchedAt ?? new Date().toISOString(),
     completedAt: payload.completedAt ?? payload.fetchedAt ?? new Date().toISOString(),
     lastRun: payload.completedAt ?? payload.fetchedAt ?? new Date().toISOString(),
-    note: "Official PLACSP sync completed.",
+    note: buildPlacspRunNote(payload, runMode),
+    feedChanged: payload.feedChanged ?? null,
+    cursorReached: payload.cursorReached ?? null,
+    truncated: payload.truncated ?? false,
     pagesFetched: payload.pagesFetched ?? 0,
     entriesSeen: payload.entriesSeen ?? 0,
     uniqueEntries: payload.uniqueEntries ?? 0,
@@ -332,24 +432,29 @@ function mergePlacspSyncResult(draft, payload) {
     opportunitiesInserted: inserted,
     opportunitiesUpdated: updated,
     unchanged,
-    sourceFeedUpdated: payload.feedUpdated ?? null,
+    sourceFeedUpdated: payload.sourceFeedUpdated ?? payload.feedUpdated ?? null,
+    previousFeedUpdated: payload.previousFeedUpdated ?? null,
+    previousEntryWatermark: payload.previousEntryWatermark ?? null,
+    nextEntryWatermark: payload.nextEntryWatermark ?? null,
     errors: (payload.parserErrors ?? []).map((item) => item.message ?? String(item))
   };
   prependSourceSyncRun(draft, run);
   return run;
 }
 
-function buildPlacspFailureRun(error, maxPages) {
+function buildPlacspFailureRun(error, { runMode = "manual", requestMode = "manual", maxPages = 1 } = {}) {
   const now = new Date().toISOString();
   return {
     id: uid("sync"),
+    mode: runMode,
+    sourceMode: requestMode,
     connector: "placsp",
     source: "PLACSP",
     status: "error",
     startedAt: now,
     completedAt: now,
     lastRun: now,
-    note: "Official PLACSP sync failed.",
+    note: runMode === "automatic" ? "Official PLACSP automatic refresh failed." : "Official PLACSP sync failed.",
     pagesRequested: maxPages,
     pagesFetched: 0,
     entriesSeen: 0,
@@ -464,10 +569,12 @@ function resolveSelectedOpportunityId(currentId, visibleItems, allItems) {
   return allItems[0]?.opportunityId ?? null;
 }
 
-function getDerived(state, runtime) {
+function getDerived(state, runtime, analysisService = null) {
   const now = getApplicationNow();
   const company = getCompany(state);
-  const portfolio = analyzePortfolio(company, state.opportunities, runtime, now);
+  const portfolio = analysisService?.analyzePortfolio
+    ? analysisService.analyzePortfolio(company, state.opportunities, runtime, now)
+    : analyzePortfolio(company, state.opportunities, runtime, now);
   const savedSet = new Set(state.savedOpportunityIds ?? []);
   const scopeItems = getScopeItems(portfolio);
   const scopedItems = scopeItems[uiState.opportunityScope] ?? scopeItems.worth_attention;
@@ -538,7 +645,8 @@ function getDerived(state, runtime) {
     aiReviewByOpportunity,
     recentAiReviews,
     questions: allQuestions,
-    evaluation
+    evaluation,
+    analysisCacheMetrics: analysisService?.getMetrics?.() ?? null
   };
 }
 
@@ -774,6 +882,83 @@ function renderSourceCacheBanner(sourceCache) {
       ${getSourceCacheErrorMessage(sourceCache) ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>` : ""}
     </div>
   `;
+}
+
+function formatTimestampDetail(value, fallback = "Not available yet.") {
+  return value ? formatDate(value, { includeTime: true }) : fallback;
+}
+
+function hasPlacspIncrementalCursor(connectorState) {
+  return Boolean(connectorState?.lastFeedUpdated || connectorState?.entryUpdatedWatermark);
+}
+
+function shouldAdvancePlacspIncrementalCursor(payload, requestMode, existingState) {
+  if (requestMode === "incremental") {
+    return payload?.truncated !== true && payload?.cursorReached === true;
+  }
+
+  if (requestMode === "reconcile" && !hasPlacspIncrementalCursor(existingState)) {
+    return payload?.truncationReason !== "safety_limit";
+  }
+
+  return false;
+}
+
+function seedPlacspConnectorState(syncRun, existingState) {
+  if (!syncRun) return existingState;
+  return createConnectorState("placsp", {
+    ...existingState,
+    lastSuccessfulSyncAt: existingState?.lastSuccessfulSyncAt ?? formatSourceRunMoment(syncRun),
+    lastManualSyncAt: existingState?.lastManualSyncAt ?? formatSourceRunMoment(syncRun),
+    lastFeedUpdated: existingState?.lastFeedUpdated ?? null,
+    entryUpdatedWatermark: existingState?.entryUpdatedWatermark ?? null,
+    lastRunMode: existingState?.lastRunMode ?? syncRun?.mode ?? "manual",
+    lastPagesFetched: existingState?.lastPagesFetched ?? syncRun?.pagesFetched ?? 0,
+    truncated: typeof existingState?.truncated === "boolean" ? existingState.truncated : false,
+    cursorReached: existingState?.cursorReached != null ? existingState.cursorReached : null
+  });
+}
+
+function touchedPlacspOpportunityIds(payload) {
+  return new Set([
+    ...(payload?.opportunities ?? []).map((item) => item.id),
+    ...(payload?.tombstones ?? []).map((item) => item.id)
+  ]);
+}
+
+function describePlacspSyncStart(runMode, requestMode, pages) {
+  if (runMode === "automatic") {
+    return requestMode === "reconcile"
+      ? "Running automatic PLACSP reconciliation..."
+      : "Running automatic PLACSP refresh...";
+  }
+  if (requestMode === "reconcile") {
+    return `Reconciling the latest ${pages} PLACSP page${pages === 1 ? "" : "s"}...`;
+  }
+  if (requestMode === "incremental") {
+    return "Checking PLACSP for incremental source changes...";
+  }
+  return `Syncing PLACSP from the first ${pages} page${pages === 1 ? "" : "s"}...`;
+}
+
+function describePlacspSyncSuccess(syncRun, { workspacePersisted, sourceCachePersisted, runMode }) {
+  let message =
+    syncRun.feedChanged === false
+      ? "PLACSP check completed: no official feed changes were detected."
+      : `PLACSP ${runMode === "reconcile" ? "reconciliation" : "sync"} completed: ${syncRun.opportunitiesInserted} inserted, ${syncRun.opportunitiesUpdated} updated, ${syncRun.unchanged} unchanged.`;
+
+  if (syncRun.truncated && syncRun.cursorReached === false) {
+    message += " The incremental traversal stopped at a safety boundary before the previous watermark was fully reached.";
+  }
+  if (!sourceCachePersisted && workspacePersisted) {
+    message += " Source cache persistence is unavailable, so these PLACSP records may be lost after reload.";
+  } else if (sourceCachePersisted && !workspacePersisted) {
+    message += " Source records were cached, but workspace persistence is unavailable for some local user state.";
+  } else if (!sourceCachePersisted && !workspacePersisted) {
+    message += " Browser persistence is unavailable for both the workspace and the source cache.";
+  }
+
+  return message;
 }
 
 function upsertCompanyProfile(draft, importedProfile) {
@@ -1897,10 +2082,11 @@ function renderLabPage(derived, persistence) {
   `;
 }
 
-function renderSourcesPage(state, runtime, sourceCache) {
+function renderSourcesPage(state, runtime, sourceCache, connectorState, refreshScheduler) {
   const aiStatus = getAiStatusMeta(runtime.ai);
   const placspRun = getLatestPlacspSyncRun(state);
   const sourceCacheMeta = getSourceCacheMeta(sourceCache);
+  const placspState = createConnectorState("placsp", connectorState);
   const placspCachedCount =
     sourceCache?.counts?.placsp ??
     state.opportunities.filter((item) => isPlacspSourceOpportunity(item)).length;
@@ -1923,13 +2109,30 @@ function renderSourcesPage(state, runtime, sourceCache) {
           ? "good"
           : "warn";
   const placspErrors = placspRun?.errors ?? [];
+  const nextAutomaticRefreshAt = refreshScheduler?.getNextAutomaticRefreshAt
+    ? refreshScheduler.getNextAutomaticRefreshAt(placspState)
+    : getNextAutomaticRefreshAt(placspState);
+  const warnings = [
+    placspRun?.truncated && placspRun?.cursorReached === false
+      ? "Incremental traversal was truncated before the previous watermark was fully reached."
+      : null,
+    (sourceCache?.status === "unavailable" || sourceCache?.status === "error")
+      ? sourceCacheMeta.detail
+      : null,
+    placspState.lastErrorAt && placspState.lastErrorCode && placspState.lastRunMode === "automatic"
+      ? "The last automatic PLACSP refresh failed and is currently in conservative backoff."
+      : null,
+    isReconciliationDue(placspState.lastReconciliationAt, Date.now())
+      ? "Recent bounded reconciliation is overdue."
+      : null
+  ].filter(Boolean);
   const secondaryRuns = (state.sourceSyncRuns ?? []).filter((run) => !isPlacspSyncRun(run));
   return `
     <section class="page-grid">
       <article class="card">
         <div class="section-heading">
           <h2>Data sources</h2>
-          <p>Manual admin syncs keep source ingestion controlled, read-only and visible.</p>
+          <p>Official connector refresh remains read-only, bounded and visible to the admin user.</p>
         </div>
         <div class="source-grid">
           <article class="source-card">
@@ -1943,9 +2146,15 @@ function renderSourcesPage(state, runtime, sourceCache) {
             </small>
             <br />
             <small>
-              ${placspRun?.sourceFeedUpdated ? `Last feed update ${escapeHtml(formatLastChecked(placspRun.sourceFeedUpdated))}` : "Feed update timestamp not available yet."}
+              ${placspState.lastFeedUpdated ? `Source feed updated ${escapeHtml(formatLastChecked(placspState.lastFeedUpdated))}` : "Feed update timestamp not available yet."}
             </small>
             <ul class="tight-list">
+              <li>Automatic refresh: ${placspState.autoRefreshEnabled ? "On" : "Off"}</li>
+              <li>Last automatic refresh: ${escapeHtml(formatTimestampDetail(placspState.lastAutomaticSyncAt, "Not yet run"))}</li>
+              <li>Last manual refresh: ${escapeHtml(formatTimestampDetail(placspState.lastManualSyncAt, "Not yet run"))}</li>
+              <li>Incremental watermark: ${escapeHtml(formatTimestampDetail(placspState.entryUpdatedWatermark, "Not stored yet"))}</li>
+              <li>Last mode: ${escapeHtml(placspRunModeLabel(placspState.lastRunMode))}</li>
+              <li>Next automatic refresh: ${escapeHtml(formatTimestampDetail(nextAutomaticRefreshAt))}</li>
               <li>Source cache: ${escapeHtml(sourceCacheMeta.label)}</li>
               <li>Cached opportunities: ${placspCachedCount}</li>
               <li>Pages fetched: ${placspRun?.pagesFetched ?? 0}</li>
@@ -1956,6 +2165,8 @@ function renderSourcesPage(state, runtime, sourceCache) {
               <li>Unchanged: ${placspRun?.unchanged ?? 0}</li>
               <li>Tombstones: ${placspRun?.tombstonesSeen ?? 0}</li>
             </ul>
+            <small>Automatic refresh runs while this local OportuneX environment is active.</small>
+            <br />
             <small>${escapeHtml(sourceCacheMeta.detail)}</small>
             <br />
             <small>
@@ -1975,9 +2186,18 @@ function renderSourcesPage(state, runtime, sourceCache) {
             }
             ${placspErrors.length ? `<small>${escapeHtml(placspErrors[0])}</small>` : ""}
             ${getSourceCacheErrorMessage(sourceCache) ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>` : ""}
+            ${
+              warnings.length
+                ? `
+                    <div class="stack">
+                      ${warnings.map((warning) => `<small>${escapeHtml(warning)}</small>`).join("")}
+                    </div>
+                  `
+                : ""
+            }
             <div class="form-actions">
               <label>
-                Pages
+                Recent pages
                 <select data-control="placsp-pages" ${uiState.placspSyncing ? "disabled" : ""}>
                   ${[1, 2, 3, 4, 5]
                     .map(
@@ -1987,10 +2207,17 @@ function renderSourcesPage(state, runtime, sourceCache) {
                     .join("")}
                 </select>
               </label>
+              <button class="button-secondary" data-action="toggle-placsp-auto-refresh" ${uiState.placspSyncing ? "disabled" : ""}>
+                Automatic refresh ${placspState.autoRefreshEnabled ? "ON" : "OFF"}
+              </button>
               <button class="button-primary" data-action="sync-placsp" ${uiState.placspSyncing ? "disabled" : ""}>
-                ${uiState.placspSyncing ? "Syncing PLACSP..." : "Sync PLACSP"}
+                ${uiState.placspSyncing ? "Syncing PLACSP..." : "Sync now"}
+              </button>
+              <button class="button-secondary" data-action="sync-placsp-reconcile" ${uiState.placspSyncing ? "disabled" : ""}>
+                Reconcile recent pages
               </button>
             </div>
+            <small>${hasPlacspIncrementalCursor(placspState) ? "Sync now uses the stored PLACSP cursor for incremental refresh." : "Sync now will seed the local PLACSP cursor from the selected page window."}</small>
           </article>
           ${secondaryRuns
             .map(
@@ -2097,11 +2324,16 @@ function renderEvaluationPage(derived) {
   `;
 }
 
-function renderHealthPage(state, runtime, derived, persistence, sourceCache) {
+function renderHealthPage(state, runtime, derived, persistence, sourceCache, connectorState, refreshScheduler) {
   const footprint = Math.round(JSON.stringify(serializeStateForPersistence(state)).length / 1024);
   const aiStatus = getAiStatusMeta(runtime.ai);
   const persistenceMeta = getPersistenceMeta(persistence);
   const sourceCacheMeta = getSourceCacheMeta(sourceCache);
+  const placspState = createConnectorState("placsp", connectorState);
+  const analysisCacheMetrics = derived.analysisCacheMetrics ?? null;
+  const nextAutomaticRefreshAt = refreshScheduler?.getNextAutomaticRefreshAt
+    ? refreshScheduler.getNextAutomaticRefreshAt(placspState)
+    : getNextAutomaticRefreshAt(placspState);
   return `
     <section class="page-grid">
       <div class="card-grid five">
@@ -2109,7 +2341,7 @@ function renderHealthPage(state, runtime, derived, persistence, sourceCache) {
         ${statCard("Analysed", String(derived.portfolio.counts.analysed))}
         ${statCard("Saved", String(state.savedOpportunityIds.length))}
         ${statCard("Local store footprint", `${footprint} KB`)}
-        ${statCard("App phase", runtime.appPhase ?? "n/a")}
+        ${statCard("Analysis cache", analysisCacheMetrics ? String(analysisCacheMetrics.cacheSize) : "n/a", analysisCacheMetrics ? `${analysisCacheMetrics.lastRunHits} hits / ${analysisCacheMetrics.lastRunMisses} misses` : "")}
       </div>
       <article class="card">
         <div class="section-heading">
@@ -2152,6 +2384,20 @@ function renderHealthPage(state, runtime, derived, persistence, sourceCache) {
                 : getSourceCacheErrorMessage(sourceCache)
                   ? `<small>${escapeHtml(getSourceCacheErrorMessage(sourceCache))}</small>`
                   : ""
+            }
+          </div>
+          <div>
+            <strong>Automatic refresh</strong>
+            <p>${placspState.autoRefreshEnabled ? "Enabled while this local app/server environment stays active." : "Disabled for this browser profile."}</p>
+            <small>Next due ${escapeHtml(formatTimestampDetail(nextAutomaticRefreshAt))}</small>
+          </div>
+          <div>
+            <strong>Analysis cache</strong>
+            <p>${analysisCacheMetrics ? `${analysisCacheMetrics.cacheSize} cached deterministic opportunity analyses.` : "No analysis cache metrics are available."}</p>
+            ${
+              analysisCacheMetrics
+                ? `<small>Last pass ${analysisCacheMetrics.lastRunHits} hits / ${analysisCacheMetrics.lastRunMisses} misses · ${analysisCacheMetrics.lastPortfolioAnalysisMs} ms</small>`
+                : ""
             }
           </div>
           <div>
@@ -2652,7 +2898,7 @@ function layout(content, runtime, derived, persistence, sourceCache) {
   `;
 }
 
-function renderRoute(route, state, runtime, derived, persistence, sourceCache) {
+function renderRoute(route, state, runtime, derived, persistence, sourceCache, connectorState, refreshScheduler) {
   switch (route) {
     case "opportunities":
       return renderOpportunityList(derived, persistence);
@@ -2663,13 +2909,13 @@ function renderRoute(route, state, runtime, derived, persistence, sourceCache) {
     case "lab":
       return renderLabPage(derived, persistence);
     case "sources":
-      return renderSourcesPage(state, runtime, sourceCache);
+      return renderSourcesPage(state, runtime, sourceCache, connectorState, refreshScheduler);
     case "debug":
       return renderDebugPage(derived, persistence);
     case "evaluation":
       return renderEvaluationPage(derived);
     case "health":
-      return renderHealthPage(state, runtime, derived, persistence, sourceCache);
+      return renderHealthPage(state, runtime, derived, persistence, sourceCache, connectorState, refreshScheduler);
     default:
       return renderOverview(derived, persistence);
   }
@@ -2733,7 +2979,10 @@ export function startApp(root, { runtime, store, services = {} }) {
   const aiVerificationService = services.runAiVerification ?? runAiVerification;
   const placspSyncService = services.runPlacspSync ?? runPlacspSync;
   const sourceCacheService = services.sourceCache ?? null;
+  const analysisCacheService = services.analysisCache ?? createAnalysisCache();
   let sourceCacheStatus = sourceCacheService?.getStatus?.() ?? null;
+  let placspConnectorState = createConnectorState("placsp");
+  let placspSyncActive = false;
 
   if (sourceCacheService?.subscribe) {
     sourceCacheService.subscribe((nextStatus) => {
@@ -2745,9 +2994,29 @@ export function startApp(root, { runtime, store, services = {} }) {
   function render() {
     const state = store.getState();
     const persistence = store.getPersistenceStatus();
-    const derived = getDerived(state, runtime);
-    const content = renderRoute(uiState.route, state, runtime, derived, persistence, sourceCacheStatus);
+    const derived = getDerived(state, runtime, analysisCacheService);
+    const content = renderRoute(
+      uiState.route,
+      state,
+      runtime,
+      derived,
+      persistence,
+      sourceCacheStatus,
+      placspConnectorState,
+      refreshScheduler
+    );
     root.innerHTML = layout(content, runtime, derived, persistence, sourceCacheStatus);
+  }
+
+  async function hydratePlacspConnectorState() {
+    if (!sourceCacheService?.getConnectorState) return placspConnectorState;
+    const result = await sourceCacheService.getConnectorState("placsp");
+    placspConnectorState = seedPlacspConnectorState(
+      getLatestPlacspSyncRun(store.getState()),
+      result?.state ?? createConnectorState("placsp")
+    );
+    await sourceCacheService.setConnectorState?.("placsp", placspConnectorState);
+    return placspConnectorState;
   }
 
   async function hydratePlacspSourceCache() {
@@ -2781,8 +3050,158 @@ export function startApp(root, { runtime, store, services = {} }) {
     return loadResult;
   }
 
+  async function persistPlacspConnectorState(patch) {
+    placspConnectorState = createConnectorState("placsp", {
+      ...placspConnectorState,
+      ...patch
+    });
+    if (!sourceCacheService?.setConnectorState) return placspConnectorState;
+    const result = await sourceCacheService.setConnectorState("placsp", placspConnectorState);
+    placspConnectorState = result?.state ?? placspConnectorState;
+    return placspConnectorState;
+  }
+
+  async function performPlacspSync({
+    requestMode,
+    runMode,
+    maxPages = uiState.placspMaxPages,
+    showMessage = true,
+    reason = "manual"
+  }) {
+    if (placspSyncActive) {
+      return {
+        ok: false,
+        busy: true
+      };
+    }
+
+    placspSyncActive = true;
+    uiState.placspSyncing = true;
+    if (showMessage) {
+      setMessage(describePlacspSyncStart(runMode, requestMode, maxPages), "info", "compact");
+      render();
+    }
+
+    try {
+      const payload = await placspSyncService({
+        mode: requestMode,
+        cursor:
+          requestMode === "incremental"
+            ? {
+                lastFeedUpdated: placspConnectorState.lastFeedUpdated,
+                entryUpdatedWatermark: placspConnectorState.entryUpdatedWatermark
+              }
+            : null,
+        maxPages
+      });
+      const nextState = clone(store.getState());
+      const syncRun = mergePlacspSyncResult(nextState, payload, runMode);
+      nextState.auditEvents = [
+        makeAudit(syncRun.note, `Fetched ${payload.pagesFetched} page(s) and processed ${payload.uniqueEntries} unique procurements.`),
+        ...(nextState.auditEvents ?? [])
+      ].slice(0, 50);
+
+      let cacheResult = { ok: true };
+      if (sourceCacheService) {
+        const touchedIds = touchedPlacspOpportunityIds(payload);
+        if (touchedIds.size > 0) {
+          const touchedPlacspOpportunities = nextState.opportunities.filter(
+            (item) => touchedIds.has(item.id) && isPlacspSourceOpportunity(item)
+          );
+          cacheResult = await sourceCacheService.upsertMany("placsp", touchedPlacspOpportunities);
+          sourceCacheStatus = sourceCacheService.getStatus();
+        }
+      }
+
+      store.replace(nextState);
+      const completedAt = payload.completedAt ?? new Date().toISOString();
+      const advanceCursor = shouldAdvancePlacspIncrementalCursor(
+        payload,
+        requestMode,
+        placspConnectorState
+      );
+      const statePatch = {
+        lastSuccessfulSyncAt: completedAt,
+        lastRunMode: runMode,
+        lastPagesFetched: payload.pagesFetched ?? 0,
+        lastFeedUpdated: advanceCursor
+          ? payload.sourceFeedUpdated ?? payload.feedUpdated ?? placspConnectorState.lastFeedUpdated
+          : placspConnectorState.lastFeedUpdated,
+        entryUpdatedWatermark: advanceCursor
+          ? payload.nextEntryWatermark ?? placspConnectorState.entryUpdatedWatermark
+          : placspConnectorState.entryUpdatedWatermark,
+        lastErrorAt: null,
+        lastErrorCode: null,
+        truncated: payload.truncated ?? false,
+        cursorReached: payload.cursorReached ?? null
+      };
+      if (runMode === "automatic") statePatch.lastAutomaticSyncAt = completedAt;
+      else statePatch.lastManualSyncAt = completedAt;
+      if (requestMode === "reconcile" || runMode === "reconcile") statePatch.lastReconciliationAt = completedAt;
+      await persistPlacspConnectorState(statePatch);
+
+      const persistenceStatus = store.getPersistenceStatus();
+      const workspacePersisted = persistenceStatus.status === "available";
+      const sourceCachePersisted = !sourceCacheService || cacheResult.ok === true;
+      if (showMessage) {
+        setMessage(
+          describePlacspSyncSuccess(syncRun, {
+            workspacePersisted,
+            sourceCachePersisted,
+            runMode: requestMode === "reconcile" ? "reconcile" : runMode
+          }),
+          workspacePersisted && sourceCachePersisted ? "success" : "warn"
+        );
+      }
+
+      return {
+        ok: true,
+        payload,
+        syncRun
+      };
+    } catch (error) {
+      store.update((draft) => {
+        prependSourceSyncRun(draft, buildPlacspFailureRun(error, { runMode, requestMode, maxPages }));
+      }, makeAudit("PLACSP sync failed", error?.message ?? "Unknown PLACSP sync error."));
+      await persistPlacspConnectorState({
+        lastRunMode: runMode,
+        lastErrorAt: new Date().toISOString(),
+        lastErrorCode: error?.code ?? "placsp_sync_failed"
+      });
+      if (showMessage) setMessage(error?.message ?? "PLACSP sync failed.", "error");
+      throw error;
+    } finally {
+      placspSyncActive = false;
+      uiState.placspSyncing = false;
+      render();
+    }
+  }
+
+  const refreshScheduler =
+    services.refreshScheduler ??
+    (
+      sourceCacheService
+        ? createConnectorRefreshScheduler({
+            connector: "placsp",
+            sourceCache: sourceCacheService,
+            isSyncActive: () => placspSyncActive || uiState.placspSyncing,
+            runSync: ({ requestMode, runMode, maxPages, reason }) =>
+              performPlacspSync({
+                requestMode,
+                runMode,
+                maxPages,
+                showMessage: false,
+                reason
+              })
+          })
+        : null
+    );
+
   render();
-  const sourceCacheReady = hydratePlacspSourceCache()
+  const sourceCacheReady = Promise.all([
+    hydratePlacspConnectorState(),
+    hydratePlacspSourceCache()
+  ])
     .catch((error) => {
       sourceCacheStatus = {
         ...(sourceCacheStatus ?? {}),
@@ -2806,13 +3225,14 @@ export function startApp(root, { runtime, store, services = {} }) {
     .finally(() => {
       render();
     });
+  refreshScheduler?.start?.({ ready: sourceCacheReady });
 
   root.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-action]");
     if (!button) return;
     const action = button.dataset.action;
     const state = store.getState();
-    const derived = getDerived(state, runtime);
+    const derived = getDerived(state, runtime, analysisCacheService);
 
     if (action === "route") {
       uiState.route = button.dataset.route;
@@ -2843,54 +3263,43 @@ export function startApp(root, { runtime, store, services = {} }) {
       return;
     }
 
-    if (action === "sync-placsp") {
-      if (uiState.placspSyncing) return;
-      uiState.placspSyncing = true;
-      setMessage(`Syncing PLACSP (${uiState.placspMaxPages} page${uiState.placspMaxPages === 1 ? "" : "s"})...`, "info", "compact");
+    if (action === "toggle-placsp-auto-refresh") {
+      await persistPlacspConnectorState({
+        autoRefreshEnabled: !placspConnectorState.autoRefreshEnabled
+      });
+      setMessage(
+        placspConnectorState.autoRefreshEnabled
+          ? "Automatic PLACSP refresh enabled for this local environment."
+          : "Automatic PLACSP refresh disabled for this local environment.",
+        "info",
+        "compact"
+      );
       render();
+      return;
+    }
 
+    if (action === "sync-placsp") {
       try {
-        const payload = await placspSyncService({
+        await performPlacspSync({
+          requestMode: hasPlacspIncrementalCursor(placspConnectorState) ? "incremental" : "manual",
+          runMode: hasPlacspIncrementalCursor(placspConnectorState) ? "incremental" : "manual",
           maxPages: uiState.placspMaxPages
         });
-        const nextState = clone(store.getState());
-        const syncRun = mergePlacspSyncResult(nextState, payload);
-        nextState.auditEvents = [
-          makeAudit("PLACSP sync completed", `Fetched ${payload.pagesFetched} page(s) and normalised ${payload.uniqueEntries} unique procurements.`),
-          ...(nextState.auditEvents ?? [])
-        ].slice(0, 50);
+      } catch {
+        // The shared sync executor already recorded state, warnings, and UI feedback.
+      }
+      return;
+    }
 
-        let cacheResult = { ok: true };
-        if (sourceCacheService) {
-          const placspOpportunities = nextState.opportunities.filter((item) => isPlacspSourceOpportunity(item));
-          cacheResult = await sourceCacheService.upsertMany("placsp", placspOpportunities);
-          sourceCacheStatus = sourceCacheService.getStatus();
-        }
-
-        store.replace(nextState);
-        const persistenceStatus = store.getPersistenceStatus();
-        const workspacePersisted = persistenceStatus.status === "available";
-        const sourceCachePersisted = !sourceCacheService || cacheResult.ok === true;
-        let message = `PLACSP sync completed: ${syncRun.opportunitiesInserted} inserted, ${syncRun.opportunitiesUpdated} updated, ${syncRun.unchanged} unchanged.`;
-        if (!sourceCachePersisted && workspacePersisted) {
-          message += " Source cache persistence is unavailable, so these PLACSP records may be lost after reload.";
-        } else if (sourceCachePersisted && !workspacePersisted) {
-          message += " Source records were cached, but workspace persistence is unavailable for some local user state.";
-        } else if (!sourceCachePersisted && !workspacePersisted) {
-          message += " Browser persistence is unavailable for both the workspace and the source cache.";
-        }
-        setMessage(
-          message,
-          workspacePersisted && sourceCachePersisted ? "success" : "warn"
-        );
-      } catch (error) {
-        store.update((draft) => {
-          prependSourceSyncRun(draft, buildPlacspFailureRun(error, uiState.placspMaxPages));
-        }, makeAudit("PLACSP sync failed", error?.message ?? "Unknown PLACSP sync error."));
-        setMessage(error?.message ?? "PLACSP sync failed.", "error");
-      } finally {
-        uiState.placspSyncing = false;
-        render();
+    if (action === "sync-placsp-reconcile") {
+      try {
+        await performPlacspSync({
+          requestMode: "reconcile",
+          runMode: "reconcile",
+          maxPages: uiState.placspMaxPages
+        });
+      } catch {
+        // The shared sync executor already recorded state, warnings, and UI feedback.
       }
       return;
     }

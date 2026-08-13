@@ -504,8 +504,12 @@ function sortAnalysed(left, right) {
   return compareDesc(left.priorityScore, right.priorityScore) || left.displayTitle.localeCompare(right.displayTitle);
 }
 
-export function analyzePortfolio(company, opportunities, runtime, now = new Date()) {
-  const analysedOutcomes = opportunities.map((opportunity) => analyzeOpportunity(company, opportunity, runtime, now));
+export function buildPortfolioFromOutcomes(
+  company,
+  analysedOutcomes,
+  now = new Date(),
+  analysedCount = analysedOutcomes.length
+) {
   const analysedItems = analysedOutcomes.map((item) => buildAnalysedItem(item)).sort(sortAnalysed);
   const buckets = {
     worthAttention: analysedItems.filter((item) => item.decision.recommendedAction.bucket === "worth_attention"),
@@ -530,10 +534,15 @@ export function analyzePortfolio(company, opportunities, runtime, now = new Date
     recommended,
     rejected,
     counts: {
-      analysed: opportunities.length,
+      analysed: analysedCount,
       worthAttention: buckets.worthAttention.length,
       needsVerification: buckets.needsVerification.length,
       notSuitable: buckets.notSuitable.length
     }
   };
+}
+
+export function analyzePortfolio(company, opportunities, runtime, now = new Date()) {
+  const analysedOutcomes = opportunities.map((opportunity) => analyzeOpportunity(company, opportunity, runtime, now));
+  return buildPortfolioFromOutcomes(company, analysedOutcomes, now, opportunities.length);
 }

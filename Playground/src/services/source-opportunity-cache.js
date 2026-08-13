@@ -1,6 +1,7 @@
 const SOURCE_CACHE_DB_NAME = "oportunex-source-cache";
-const SOURCE_CACHE_DB_VERSION = 1;
+const SOURCE_CACHE_DB_VERSION = 2;
 const SOURCE_CACHE_STORE = "opportunities";
+const CONNECTOR_STATE_STORE = "connectorState";
 const SOURCE_CACHE_CONNECTOR_INDEX = "connector";
 const SOURCE_CACHE_SOURCE_OPPORTUNITY_INDEX = "sourceOpportunityId";
 
@@ -91,6 +92,33 @@ function sourceCacheSaveError(result, connector = "placsp", overrides = {}) {
 function normalizeConnector(value, fallback = "") {
   if (typeof value !== "string") return fallback;
   return value.trim().toLowerCase();
+}
+
+function normalizeTimestamp(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+export function createConnectorState(connector, overrides = {}) {
+  const normalizedConnector = normalizeConnector(connector, "placsp");
+  const record = isPlainObject(overrides) ? overrides : {};
+  return {
+    connector: normalizedConnector,
+    lastSuccessfulSyncAt: normalizeTimestamp(record.lastSuccessfulSyncAt),
+    lastAutomaticSyncAt: normalizeTimestamp(record.lastAutomaticSyncAt),
+    lastManualSyncAt: normalizeTimestamp(record.lastManualSyncAt),
+    lastReconciliationAt: normalizeTimestamp(record.lastReconciliationAt),
+    lastFeedUpdated: normalizeTimestamp(record.lastFeedUpdated),
+    entryUpdatedWatermark: normalizeTimestamp(record.entryUpdatedWatermark),
+    lastRunMode: typeof record.lastRunMode === "string" ? record.lastRunMode : null,
+    lastPagesFetched: Number.isFinite(Number(record.lastPagesFetched)) ? Math.max(0, Number(record.lastPagesFetched)) : 0,
+    lastErrorAt: normalizeTimestamp(record.lastErrorAt),
+    lastErrorCode: typeof record.lastErrorCode === "string" ? record.lastErrorCode : null,
+    autoRefreshEnabled: record.autoRefreshEnabled !== false,
+    truncated: typeof record.truncated === "boolean" ? record.truncated : false,
+    cursorReached: typeof record.cursorReached === "boolean" ? record.cursorReached : null
+  };
 }
 
 function normalizeOpportunityForConnector(opportunity, connector) {
@@ -211,6 +239,10 @@ export function createIndexedDbSourceCacheAdapter({
         if (!store.indexNames.contains(SOURCE_CACHE_SOURCE_OPPORTUNITY_INDEX)) {
           store.createIndex(SOURCE_CACHE_SOURCE_OPPORTUNITY_INDEX, "sourceOpportunityId", { unique: false });
         }
+
+        if (!db.objectStoreNames.contains(CONNECTOR_STATE_STORE)) {
+          db.createObjectStore(CONNECTOR_STATE_STORE, { keyPath: "connector" });
+        }
       };
 
       request.onsuccess = () => resolve(request.result);
@@ -221,13 +253,22 @@ export function createIndexedDbSourceCacheAdapter({
     return dbPromise;
   }
 
-  async function getAllRecords() {
+  async function getAllRecords(storeName = SOURCE_CACHE_STORE) {
     const db = await openDatabase();
-    const transaction = db.transaction(SOURCE_CACHE_STORE, "readonly");
-    const store = transaction.objectStore(SOURCE_CACHE_STORE);
+    const transaction = db.transaction(storeName, "readonly");
+    const store = transaction.objectStore(storeName);
     const records = await requestToPromise(store.getAll());
     await transactionDone(transaction);
     return sanitizeArray(records);
+  }
+
+  async function getConnectorStateRecord(connector) {
+    const db = await openDatabase();
+    const transaction = db.transaction(CONNECTOR_STATE_STORE, "readonly");
+    const store = transaction.objectStore(CONNECTOR_STATE_STORE);
+    const record = await requestToPromise(store.get(normalizeConnector(connector, "placsp")));
+    await transactionDone(transaction);
+    return record ?? null;
   }
 
   return {
@@ -305,15 +346,61 @@ export function createIndexedDbSourceCacheAdapter({
           message: serializeError(error)
         };
       }
+    },
+    async getConnectorState(connector) {
+      if (!indexedDB) return createUnavailableResult();
+      try {
+        return {
+          ok: true,
+          state: createConnectorState(connector, await getConnectorStateRecord(connector))
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          code: "SOURCE_CACHE_CONNECTOR_STATE_LOAD_FAILED",
+          message: serializeError(error)
+        };
+      }
+    },
+    async setConnectorState(connector, state) {
+      if (!indexedDB) return createUnavailableResult();
+      try {
+        const db = await openDatabase();
+        const transaction = db.transaction(CONNECTOR_STATE_STORE, "readwrite");
+        const store = transaction.objectStore(CONNECTOR_STATE_STORE);
+        store.put(createConnectorState(connector, state));
+        await transactionDone(transaction);
+        return {
+          ok: true,
+          state: createConnectorState(connector, state)
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          code: "SOURCE_CACHE_CONNECTOR_STATE_SAVE_FAILED",
+          message: serializeError(error)
+        };
+      }
     }
   };
 }
 
-export function createInMemorySourceCacheAdapter(initialRecords = []) {
+export function createInMemorySourceCacheAdapter(initialData = []) {
   const records = new Map();
+  const connectorStates = new Map();
+  const initialRecords = Array.isArray(initialData) ? initialData : initialData?.records ?? [];
+  const initialConnectorStates = Array.isArray(initialData)
+    ? []
+    : Object.values(initialData?.connectorStates ?? {});
+
   sanitizeArray(initialRecords).forEach((record) => {
     if (!record?.id) return;
     records.set(record.id, structuredClone(record));
+  });
+  sanitizeArray(initialConnectorStates).forEach((record) => {
+    const connector = normalizeConnector(record?.connector, "");
+    if (!connector) return;
+    connectorStates.set(connector, createConnectorState(connector, record));
   });
 
   return {
@@ -348,8 +435,30 @@ export function createInMemorySourceCacheAdapter(initialRecords = []) {
         });
       return { ok: true };
     },
+    async getConnectorState(connector) {
+      const normalizedConnector = normalizeConnector(connector, "placsp");
+      return {
+        ok: true,
+        state: createConnectorState(
+          normalizedConnector,
+          structuredClone(connectorStates.get(normalizedConnector) ?? {})
+        )
+      };
+    },
+    async setConnectorState(connector, state) {
+      const normalizedConnector = normalizeConnector(connector, "placsp");
+      const nextState = createConnectorState(normalizedConnector, state);
+      connectorStates.set(normalizedConnector, structuredClone(nextState));
+      return {
+        ok: true,
+        state: nextState
+      };
+    },
     dump() {
       return [...records.values()].map((item) => structuredClone(item));
+    },
+    dumpConnectorStates() {
+      return [...connectorStates.values()].map((item) => structuredClone(item));
     }
   };
 }
@@ -532,6 +641,61 @@ export function createSourceOpportunityCache({
     return { ok: true };
   }
 
+  async function getConnectorState(connector) {
+    const normalizedConnector = normalizeConnector(connector, "placsp");
+    const result = normalizeAdapterResult(
+      await adapter.getConnectorState?.(normalizedConnector),
+      "SOURCE_CACHE_CONNECTOR_STATE_LOAD_FAILED",
+      "Source connector state load failed."
+    );
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        code: result.code,
+        message: result.message,
+        state: createConnectorState(normalizedConnector)
+      };
+    }
+
+    return {
+      ok: true,
+      state: createConnectorState(normalizedConnector, result.state)
+    };
+  }
+
+  async function setConnectorState(connector, state) {
+    const normalizedConnector = normalizeConnector(connector, "placsp");
+    const result = normalizeAdapterResult(
+      await adapter.setConnectorState?.(normalizedConnector, state),
+      "SOURCE_CACHE_CONNECTOR_STATE_SAVE_FAILED",
+      "Source connector state save failed."
+    );
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        code: result.code,
+        message: result.message,
+        state: createConnectorState(normalizedConnector, state)
+      };
+    }
+
+    return {
+      ok: true,
+      state: createConnectorState(normalizedConnector, result.state ?? state)
+    };
+  }
+
+  async function patchConnectorState(connector, patch) {
+    const current = await getConnectorState(connector);
+    if (!current.ok) return current;
+    return setConnectorState(connector, {
+      ...current.state,
+      ...(isPlainObject(patch) ? patch : {})
+    });
+  }
+
   return {
     getStatus: () => status,
     subscribe(listener) {
@@ -541,6 +705,9 @@ export function createSourceOpportunityCache({
     loadByConnector,
     upsertMany,
     count,
-    clearConnector
+    clearConnector,
+    getConnectorState,
+    setConnectorState,
+    patchConnectorState
   };
 }

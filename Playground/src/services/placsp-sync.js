@@ -1,10 +1,10 @@
-export async function runPlacspSync({ maxPages = 1, fetchImpl = fetch } = {}) {
+export async function runPlacspSync({ mode = "manual", cursor = null, maxPages = 1, fetchImpl = fetch } = {}) {
   const response = await fetchImpl("/api/connectors/placsp/sync", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ maxPages })
+    body: JSON.stringify({ mode, cursor, maxPages })
   });
 
   let payload = null;
