@@ -77,6 +77,10 @@ function clickAction(root, dataset) {
   });
 }
 
+async function nextTick() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function makePlacspOpportunity(index, overrides = {}) {
   return {
     id: overrides.id ?? `placsp:test-${index}`,
@@ -588,7 +592,7 @@ test("BDNS partial detail failures preserve cached records and do not disturb PL
         detailFailures: [
           {
             code: existingB.sourceOpportunityId,
-            message: "502 Bad Gateway for BDNS detail 700002"
+            message: "429 Too Many Requests for BDNS detail 700002 after bounded retries"
           }
         ],
         truncated: false,
@@ -686,6 +690,222 @@ test("BDNS partial detail failures preserve cached records and do not disturb PL
     assert.deepEqual(placspStateAfterRecovery.state, placspStateBefore.state);
     assert.equal(bdnsStateAfterRecovery.state.lastManualSyncAt, "2026-08-13T12:00:00.000Z");
     assert.equal(bdnsStateAfterRecovery.state.lastRunMode, "manual");
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("automatic BDNS refresh uses the bounded local-active policy, updates automatic timestamps, and never runs AI", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const catalog = await loadCatalog();
+    const payload = await bdnsSyncPayload(["normalSmeGrant", "fixedWindow"], catalog, "2026-08-14T09:30:00.000Z");
+    payload.mode = "automatic";
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const sourceCache = createSourceOpportunityCache({
+      adapter: createInMemorySourceCacheAdapter()
+    });
+    await sourceCache.setConnectorState("bdns", {
+      lastSuccessfulSyncAt: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
+      lastReconciliationAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      autoRefreshEnabled: true
+    });
+
+    const requests = [];
+    let aiCalls = 0;
+    const root = createRoot();
+    const app = startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        sourceCache,
+        refreshSchedulers: {
+          placsp: {
+            start() {},
+            getNextAutomaticRefreshAt() {
+              return "2026-08-15T00:00:00.000Z";
+            }
+          }
+        },
+        async runBdnsSync(request) {
+          requests.push(request);
+          return payload;
+        },
+        async runAiVerification() {
+          aiCalls += 1;
+          throw new Error("AI should never auto-run during BDNS automatic refresh.");
+        }
+      }
+    });
+
+    await app.whenSourceCacheReady();
+    await nextTick();
+
+    assert.deepEqual(requests, [
+      {
+        mode: "automatic",
+        pages: 1,
+        pageSize: 20
+      }
+    ]);
+    assert.equal(aiCalls, 0);
+    assert.equal(store.getState().sourceSyncRuns[0].mode, "automatic");
+    assert.equal(store.getState().sourceSyncRuns[0].sourceMode, "automatic");
+    assert.equal(store.getState().sourceSyncRuns[0].opportunitiesInserted, 2);
+    assert.equal((await sourceCache.count("bdns")).count, 2);
+
+    const bdnsState = await sourceCache.getConnectorState("bdns");
+    assert.equal(bdnsState.ok, true);
+    assert.equal(bdnsState.state.lastSuccessfulSyncAt, payload.completedAt);
+    assert.equal(bdnsState.state.lastAutomaticSyncAt, payload.completedAt);
+    assert.equal(bdnsState.state.lastManualSyncAt, null);
+    assert.equal(bdnsState.state.lastRunMode, "automatic");
+    assert.equal(bdnsState.state.lastPagesFetched, 1);
+    assert.equal(bdnsState.state.lastErrorAt, null);
+    assert.equal(bdnsState.state.lastErrorCode, null);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("automatic BDNS reconciliation updates changed recent calls, preserves failed cached records, and does not delete by absence", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const catalog = await loadCatalog();
+    const existingA = normalizeBdnsOpportunity(catalog.normalSmeGrant, {
+      fetchedAt: "2026-08-13T08:00:00.000Z",
+      now: new Date("2026-08-13T08:00:00.000Z")
+    });
+    const existingB = normalizeBdnsOpportunity(catalog.fixedWindow, {
+      fetchedAt: "2026-08-13T08:00:00.000Z",
+      now: new Date("2026-08-13T08:00:00.000Z")
+    });
+    const existingC = normalizeBdnsOpportunity(catalog.futureDeadlineAbiertoFalse, {
+      fetchedAt: "2026-08-13T08:00:00.000Z",
+      now: new Date("2026-08-13T08:00:00.000Z")
+    });
+    const updatedB = normalizeBdnsOpportunity(
+      {
+        ...catalog.fixedWindow,
+        descripcion: "Subvenciones para equipos de climatizacion eficiente (version 2)"
+      },
+      {
+        fetchedAt: "2026-08-14T10:30:00.000Z",
+        now: new Date("2026-08-14T10:30:00.000Z")
+      }
+    );
+    const newD = normalizeBdnsOpportunity(catalog.programmeBudgetOnly, {
+      fetchedAt: "2026-08-14T10:30:00.000Z",
+      now: new Date("2026-08-14T10:30:00.000Z")
+    });
+    const payload = {
+      connector: "bdns",
+      mode: "reconcile",
+      startedAt: "2026-08-14T10:30:00.000Z",
+      completedAt: "2026-08-14T10:30:00.000Z",
+      fetchedAt: "2026-08-14T10:30:00.000Z",
+      pagesFetched: 3,
+      pageSize: 50,
+      discoveryCount: 4,
+      uniqueCodes: 4,
+      detailsRequested: 4,
+      detailsFetched: 3,
+      detailFailures: [
+        {
+          code: existingC.sourceOpportunityId,
+          message: "502 Bad Gateway for BDNS detail 700003"
+        }
+      ],
+      truncated: false,
+      truncationReason: null,
+      opportunities: [existingA, updatedB, newD],
+      stats: {
+        uniqueEntries: 4
+      }
+    };
+
+    const state = createDemoState();
+    state.opportunities = [];
+
+    const store = createStore({
+      storageAdapter: createMockStorageAdapter({
+        initialRaw: JSON.stringify(state)
+      })
+    });
+    const sourceCache = createSourceOpportunityCache({
+      adapter: createInMemorySourceCacheAdapter()
+    });
+    await sourceCache.upsertMany("bdns", [existingA, existingB, existingC]);
+    await sourceCache.setConnectorState("bdns", {
+      lastSuccessfulSyncAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      lastReconciliationAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+      lastRunMode: "manual",
+      autoRefreshEnabled: true
+    });
+
+    const requests = [];
+    let aiCalls = 0;
+    const root = createRoot();
+    const app = startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        sourceCache,
+        refreshSchedulers: {
+          placsp: {
+            start() {},
+            getNextAutomaticRefreshAt() {
+              return "2026-08-15T00:00:00.000Z";
+            }
+          }
+        },
+        async runBdnsSync(request) {
+          requests.push(request);
+          return payload;
+        },
+        async runAiVerification() {
+          aiCalls += 1;
+          throw new Error("AI should never auto-run during BDNS reconciliation.");
+        }
+      }
+    });
+
+    await app.whenSourceCacheReady();
+    await nextTick();
+
+    assert.deepEqual(requests, [
+      {
+        mode: "reconcile",
+        pages: 3,
+        pageSize: 50
+      }
+    ]);
+    assert.equal(aiCalls, 0);
+
+    const storedA = store.getState().opportunities.find((item) => item.id === existingA.id);
+    const storedB = store.getState().opportunities.find((item) => item.id === existingB.id);
+    const storedC = store.getState().opportunities.find((item) => item.id === existingC.id);
+    const storedD = store.getState().opportunities.find((item) => item.id === newD.id);
+    assert.equal(storedA?.sourceNoticeVersionId, existingA.sourceNoticeVersionId);
+    assert.equal(storedB?.sourceNoticeVersionId, updatedB.sourceNoticeVersionId);
+    assert.equal(storedC?.sourceNoticeVersionId, existingC.sourceNoticeVersionId);
+    assert.equal(storedD?.sourceNoticeVersionId, newD.sourceNoticeVersionId);
+    assert.equal((await sourceCache.count("bdns")).count, 4);
+    assert.equal(store.getState().sourceSyncRuns[0].mode, "automatic");
+    assert.equal(store.getState().sourceSyncRuns[0].sourceMode, "reconcile");
+    assert.match(store.getState().sourceSyncRuns[0].note, /recent reconciliation/i);
+
+    const bdnsState = await sourceCache.getConnectorState("bdns");
+    assert.equal(bdnsState.ok, true);
+    assert.equal(bdnsState.state.lastSuccessfulSyncAt, payload.completedAt);
+    assert.equal(bdnsState.state.lastAutomaticSyncAt, payload.completedAt);
+    assert.equal(bdnsState.state.lastReconciliationAt, payload.completedAt);
+    assert.equal(bdnsState.state.lastManualSyncAt, null);
+    assert.equal(bdnsState.state.lastRunMode, "automatic");
   } finally {
     globalThis.window = previousWindow;
   }

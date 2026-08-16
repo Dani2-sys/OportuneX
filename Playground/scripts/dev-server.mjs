@@ -387,6 +387,7 @@ async function handleApi(request, response) {
 
     try {
       const result = await syncBdnsCalls({
+        mode: payload?.mode,
         pages: payload?.pages,
         pageSize: payload?.pageSize
       });

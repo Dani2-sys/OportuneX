@@ -7,6 +7,7 @@ const DEFAULT_RECONCILIATION_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_RECONCILE_MAX_PAGES = 5;
 const DEFAULT_LEASE_MS = 2 * 60 * 1000;
 const DEFAULT_LEASE_KEY = "oportunex.placsp.auto-sync-lock.v1";
+const BDNS_LEASE_KEY = "oportunex.bdns.auto-sync-lock.v1";
 
 function normalizeDate(value) {
   const parsed = Date.parse(value ?? "");
@@ -15,6 +16,39 @@ function normalizeDate(value) {
 
 function nextIso(nowMs) {
   return new Date(nowMs).toISOString();
+}
+
+function normalizeConnectorName(connector) {
+  return createConnectorState(connector)?.connector ?? "placsp";
+}
+
+export function getRefreshLeaseKey(connector = "placsp") {
+  return normalizeConnectorName(connector) === "bdns" ? BDNS_LEASE_KEY : DEFAULT_LEASE_KEY;
+}
+
+function defaultBuildSyncRequest({ connector, reconciliationDue, reconcileMaxPages }) {
+  if (normalizeConnectorName(connector) === "bdns") {
+    return reconciliationDue
+      ? {
+          requestMode: "reconcile",
+          runMode: "automatic"
+        }
+      : {
+          requestMode: "automatic",
+          runMode: "automatic"
+        };
+  }
+
+  return reconciliationDue
+    ? {
+        requestMode: "reconcile",
+        runMode: "automatic",
+        maxPages: reconcileMaxPages
+      }
+    : {
+        requestMode: "incremental",
+        runMode: "automatic"
+      };
 }
 
 export function isRefreshFresh(lastSuccessfulSyncAt, nowMs, dueIntervalMs = DEFAULT_DUE_INTERVAL_MS) {
@@ -197,17 +231,21 @@ export function createConnectorRefreshScheduler({
   failureBackoffMs = DEFAULT_FAILURE_BACKOFF_MS,
   reconciliationIntervalMs = DEFAULT_RECONCILIATION_INTERVAL_MS,
   reconcileMaxPages = DEFAULT_RECONCILE_MAX_PAGES,
+  buildSyncRequest = defaultBuildSyncRequest,
   nowImpl = () => new Date(),
   timerApi = globalThis,
   visibilityApi = defaultVisibilityApi(),
   networkApi = defaultNetworkApi(),
-  lease = createRefreshLease()
+  lease = null
 } = {}) {
   let intervalId = null;
   let started = false;
   let hydrationReady = false;
   let currentRun = null;
   let readyPromise = Promise.resolve();
+  const refreshLease = lease ?? createRefreshLease({
+    key: getRefreshLeaseKey(connector)
+  });
   const unsubscribe = [];
   const status = {
     lastCheckAt: null,
@@ -277,21 +315,28 @@ export function createConnectorRefreshScheduler({
       return { ran: false, reason: "fresh" };
     }
 
-    const leaseResult = await lease.acquire();
+    const leaseResult = await refreshLease.acquire();
     if (!leaseResult.acquired) {
       status.lastDecision = "lease_busy";
       return { ran: false, reason: "lease_busy" };
     }
 
-    const mode = reconciliationDue ? "reconcile" : "incremental";
+    const syncRequest = buildSyncRequest({
+      connector,
+      reconciliationDue,
+      reconcileMaxPages
+    }) ?? defaultBuildSyncRequest({
+      connector,
+      reconciliationDue,
+      reconcileMaxPages
+    });
+    const mode = syncRequest.requestMode ?? (reconciliationDue ? "reconcile" : "incremental");
     status.lastDecision = "running";
     status.lastMode = mode;
     currentRun = Promise.resolve(
       runSync({
-        requestMode: mode,
-        runMode: "automatic",
-        maxPages: mode === "reconcile" ? reconcileMaxPages : undefined,
-        reason
+        reason,
+        ...syncRequest
       })
     );
 
@@ -304,7 +349,7 @@ export function createConnectorRefreshScheduler({
       };
     } finally {
       currentRun = null;
-      await lease.release();
+      await refreshLease.release();
     }
   }
 

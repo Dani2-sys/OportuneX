@@ -1,5 +1,6 @@
 export async function runBdnsSync(
   {
+    mode = "manual",
     pages = 1,
     pageSize = 20,
     fetchImpl = fetch
@@ -10,7 +11,7 @@ export async function runBdnsSync(
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ pages, pageSize })
+    body: JSON.stringify({ mode, pages, pageSize })
   });
 
   let payload = null;

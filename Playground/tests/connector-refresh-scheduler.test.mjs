@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   createConnectorRefreshScheduler,
-  createRefreshLease
+  createRefreshLease,
+  getRefreshLeaseKey
 } from "../src/services/connector-refresh-scheduler.js";
 import { createConnectorState } from "../src/services/source-opportunity-cache.js";
 
@@ -78,19 +79,22 @@ function createMemoryStorage() {
 }
 
 function createHarness({
+  connector = "placsp",
   state = {},
   now = "2026-08-13T12:00:00.000Z",
   isSyncActive = () => false,
-  runSync = async () => {}
+  runSync = async () => {},
+  storage = globalThis.localStorage ?? createMemoryStorage(),
+  buildSyncRequest = undefined,
+  lease = undefined
 } = {}) {
-  let connectorState = createConnectorState("placsp", state);
+  let connectorState = createConnectorState(connector, state);
   const syncCalls = [];
   const timerApi = createTimerApi();
   const visibilityApi = createVisibilityApi(true);
   const networkApi = createNetworkApi(true);
-  const storage = createMemoryStorage();
   const scheduler = createConnectorRefreshScheduler({
-    connector: "placsp",
+    connector,
     sourceCache: {
       async getConnectorState() {
         return {
@@ -108,20 +112,23 @@ function createHarness({
     timerApi,
     visibilityApi,
     networkApi,
-    lease: createRefreshLease({
+    buildSyncRequest,
+    lease: lease ?? createRefreshLease({
+      key: getRefreshLeaseKey(connector),
       storage,
       nowImpl: () => Date.parse(now)
     })
   });
 
   return {
+    connector,
     scheduler,
     syncCalls,
     timerApi,
     visibilityApi,
     networkApi,
     setState(nextState) {
-      connectorState = createConnectorState("placsp", {
+      connectorState = createConnectorState(connector, {
         ...connectorState,
         ...nextState
       });
@@ -304,4 +311,213 @@ test("refresh lease allows one owner, expires cleanly, and releases on completio
   await second.release();
   const recoveredFirst = await first.acquire();
   assert.equal(recoveredFirst.acquired, true);
+});
+
+test("BDNS overdue refresh triggers one automatic bounded request without PLACSP cursor semantics", async () => {
+  const harness = createHarness({
+    connector: "bdns",
+    state: {
+      lastSuccessfulSyncAt: "2026-08-12T00:00:00.000Z",
+      lastReconciliationAt: "2026-08-13T07:00:00.000Z"
+    },
+    buildSyncRequest: ({ reconciliationDue }) =>
+      reconciliationDue
+        ? {
+            requestMode: "reconcile",
+            runMode: "automatic",
+            pages: 3,
+            pageSize: 50
+          }
+        : {
+            requestMode: "automatic",
+            runMode: "automatic",
+            pages: 1,
+            pageSize: 20
+          }
+  });
+
+  harness.scheduler.start({ ready: Promise.resolve() });
+  await nextTick();
+
+  assert.equal(harness.syncCalls.length, 1);
+  assert.deepEqual(harness.syncCalls[0], {
+    requestMode: "automatic",
+    runMode: "automatic",
+    pages: 1,
+    pageSize: 20,
+    reason: "startup"
+  });
+});
+
+test("BDNS scheduler chooses recent reconciliation with bounded 3x50 discovery window", async () => {
+  const harness = createHarness({
+    connector: "bdns",
+    state: {
+      lastSuccessfulSyncAt: "2026-08-13T08:30:00.000Z",
+      lastReconciliationAt: "2026-08-01T08:30:00.000Z"
+    },
+    buildSyncRequest: ({ reconciliationDue }) =>
+      reconciliationDue
+        ? {
+            requestMode: "reconcile",
+            runMode: "automatic",
+            pages: 3,
+            pageSize: 50
+          }
+        : {
+            requestMode: "automatic",
+            runMode: "automatic",
+            pages: 1,
+            pageSize: 20
+          }
+  });
+
+  harness.scheduler.start({ ready: Promise.resolve() });
+  await nextTick();
+
+  assert.equal(harness.syncCalls.length, 1);
+  assert.equal(harness.syncCalls[0].requestMode, "reconcile");
+  assert.equal(harness.syncCalls[0].runMode, "automatic");
+  assert.equal(harness.syncCalls[0].pages, 3);
+  assert.equal(harness.syncCalls[0].pageSize, 50);
+});
+
+test("active PLACSP lease does not block BDNS refresh and active BDNS lease does not block PLACSP refresh", async () => {
+  const previousLocalStorage = globalThis.localStorage;
+  const storage = createMemoryStorage();
+  globalThis.localStorage = storage;
+
+  try {
+    const placsp = createHarness({
+      connector: "placsp",
+      state: {
+        lastSuccessfulSyncAt: "2026-08-12T00:00:00.000Z",
+        lastReconciliationAt: "2026-08-13T07:00:00.000Z"
+      },
+      lease: null
+    });
+    const bdns = createHarness({
+      connector: "bdns",
+      state: {
+        lastSuccessfulSyncAt: "2026-08-12T00:00:00.000Z",
+        lastReconciliationAt: "2026-08-13T07:00:00.000Z"
+      },
+      buildSyncRequest: () => ({
+        requestMode: "automatic",
+        runMode: "automatic",
+        pages: 1,
+        pageSize: 20
+      }),
+      lease: null
+    });
+
+    const placspLease = createRefreshLease({
+      key: getRefreshLeaseKey("placsp"),
+      storage,
+      ownerId: "placsp-tab",
+      nowImpl: () => Date.parse("2026-08-13T12:00:00.000Z")
+    });
+    const bdnsLease = createRefreshLease({
+      key: getRefreshLeaseKey("bdns"),
+      storage,
+      ownerId: "bdns-tab",
+      nowImpl: () => Date.parse("2026-08-13T12:00:00.000Z")
+    });
+
+    assert.equal((await placspLease.acquire()).acquired, true);
+    bdns.scheduler.start({ ready: Promise.resolve() });
+    await nextTick();
+    assert.equal(bdns.syncCalls.length, 1);
+
+    await placspLease.release();
+    assert.equal((await bdnsLease.acquire()).acquired, true);
+    placsp.scheduler.start({ ready: Promise.resolve() });
+    await nextTick();
+    assert.equal(placsp.syncCalls.length, 1);
+  } finally {
+    globalThis.localStorage = previousLocalStorage;
+  }
+});
+
+test("two BDNS tabs contend for the same BDNS lease and only one runs", async () => {
+  const previousLocalStorage = globalThis.localStorage;
+  const storage = createMemoryStorage();
+  globalThis.localStorage = storage;
+
+  try {
+    const first = createHarness({
+      connector: "bdns",
+      state: {
+        lastSuccessfulSyncAt: "2026-08-12T00:00:00.000Z",
+        lastReconciliationAt: "2026-08-13T07:00:00.000Z"
+      },
+      buildSyncRequest: () => ({
+        requestMode: "automatic",
+        runMode: "automatic",
+        pages: 1,
+        pageSize: 20
+      }),
+      lease: null
+    });
+    const second = createHarness({
+      connector: "bdns",
+      state: {
+        lastSuccessfulSyncAt: "2026-08-12T00:00:00.000Z",
+        lastReconciliationAt: "2026-08-13T07:00:00.000Z"
+      },
+      buildSyncRequest: () => ({
+        requestMode: "automatic",
+        runMode: "automatic",
+        pages: 1,
+        pageSize: 20
+      }),
+      lease: null
+    });
+
+    let releaseFirst;
+    first.scheduler = createConnectorRefreshScheduler({
+      connector: "bdns",
+      sourceCache: {
+        async getConnectorState() {
+          return {
+            ok: true,
+            state: createConnectorState("bdns", {
+              lastSuccessfulSyncAt: "2026-08-12T00:00:00.000Z",
+              lastReconciliationAt: "2026-08-13T07:00:00.000Z"
+            })
+          };
+        }
+      },
+      nowImpl: () => new Date("2026-08-13T12:00:00.000Z"),
+      buildSyncRequest: () => ({
+        requestMode: "automatic",
+        runMode: "automatic",
+        pages: 1,
+        pageSize: 20
+      }),
+      runSync: async (request) => {
+        first.syncCalls.push(request);
+        await new Promise((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+    });
+
+    first.scheduler.start({ ready: Promise.resolve() });
+    await nextTick();
+
+    second.scheduler.start({ ready: Promise.resolve() });
+    await nextTick();
+    const secondResult = await second.scheduler.runDueCheck("manual");
+
+    assert.equal(first.syncCalls.length, 1);
+    assert.equal(second.syncCalls.length, 0);
+    assert.equal(secondResult.ran, false);
+    assert.equal(secondResult.reason, "lease_busy");
+
+    releaseFirst();
+    await nextTick();
+  } finally {
+    globalThis.localStorage = previousLocalStorage;
+  }
 });

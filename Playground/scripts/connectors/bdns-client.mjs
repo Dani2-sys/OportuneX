@@ -8,13 +8,35 @@ import {
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_MAX_RESPONSE_BYTES = 5_000_000;
 const DEFAULT_MAX_TOTAL_RESPONSE_BYTES = 20_000_000;
-const DEFAULT_MAX_ELAPSED_MS = 60000;
+const DEFAULT_MAX_ELAPSED_MS = 180000;
 const DEFAULT_PAGES = 1;
 const DEFAULT_PAGE_SIZE = 20;
+const DEFAULT_AUTOMATIC_PAGES = 1;
+const DEFAULT_AUTOMATIC_PAGE_SIZE = 20;
+const DEFAULT_RECONCILE_PAGES = 3;
+const DEFAULT_RECONCILE_PAGE_SIZE = 50;
 const HARD_MAX_PAGES = 3;
 const HARD_MAX_PAGE_SIZE = 50;
-const DEFAULT_DETAIL_CONCURRENCY = 3;
-const HARD_MAX_DETAIL_CALLS = 120;
+const DEFAULT_DETAIL_CONCURRENCY = 1;
+const HARD_MAX_DETAIL_CALLS = 150;
+const DETAIL_REQUEST_POLICY = Object.freeze({
+  manual: Object.freeze({
+    concurrency: 1,
+    spacingMs: 400
+  }),
+  automatic: Object.freeze({
+    concurrency: 1,
+    spacingMs: 600
+  }),
+  reconcile: Object.freeze({
+    concurrency: 1,
+    spacingMs: 600
+  })
+});
+const DETAIL_RETRYABLE_STATUS_CODES = new Set([429, 502, 503, 504]);
+const DETAIL_RETRY_DELAYS_MS = Object.freeze([1500, 3000]);
+const DETAIL_MAX_RETRIES = 2;
+const MAX_REASONABLE_RETRY_AFTER_MS = 15000;
 
 export class BdnsSyncError extends Error {
   constructor(statusCode, code, message, adminMessage = message) {
@@ -69,7 +91,82 @@ function sanitizePageSize(value) {
 function sanitizeDetailConcurrency(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_DETAIL_CONCURRENCY;
-  return Math.min(4, Math.max(1, Math.round(parsed)));
+  return Math.min(DEFAULT_DETAIL_CONCURRENCY, Math.max(1, Math.round(parsed)));
+}
+
+function sanitizeSpacingMs(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.round(parsed));
+}
+
+function parseRetryAfterMs(value, nowMs = Date.now()) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const trimmed = value.trim();
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds)) {
+    const milliseconds = Math.round(seconds * 1000);
+    return milliseconds > 0 ? milliseconds : null;
+  }
+
+  const absoluteMs = Date.parse(trimmed);
+  if (!Number.isFinite(absoluteMs)) return null;
+  const milliseconds = absoluteMs - nowMs;
+  return milliseconds > 0 ? milliseconds : null;
+}
+
+function shouldRetryDetailError(error) {
+  if (!(error instanceof BdnsSyncError)) return false;
+  const status = Number(error.httpStatus ?? error.statusCode ?? NaN);
+  return DETAIL_RETRYABLE_STATUS_CODES.has(status);
+}
+
+function resolveRetryDelayMs(error, retryIndex) {
+  if (Number.isFinite(error?.retryAfterMs) && error.retryAfterMs > 0 && error.retryAfterMs <= MAX_REASONABLE_RETRY_AFTER_MS) {
+    return error.retryAfterMs;
+  }
+  return DETAIL_RETRY_DELAYS_MS[retryIndex] ?? null;
+}
+
+function createDetailStartPacer({ spacingMs, sleepImpl, nowMsImpl }) {
+  let nextAllowedStartAtMs = nowMsImpl();
+
+  return {
+    async waitForNextStart() {
+      const waitMs = Math.max(0, nextAllowedStartAtMs - nowMsImpl());
+      if (waitMs > 0) {
+        await sleepImpl(waitMs);
+      }
+      nextAllowedStartAtMs = Math.max(nextAllowedStartAtMs, nowMsImpl()) + spacingMs;
+      return waitMs;
+    }
+  };
+}
+
+function assertElapsedWithinLimit(startedAtMs, maxElapsedMs, nowMsImpl, label) {
+  if (nowMsImpl() - startedAtMs > maxElapsedMs) {
+    throw new BdnsSyncError(
+      504,
+      "bdns_timeout",
+      "The official BDNS API did not respond in time.",
+      `BDNS ${label} exceeded the ${maxElapsedMs} ms total elapsed guard.`
+    );
+  }
+}
+
+function assertTotalBytesWithinLimit(totalBytes, maxTotalResponseBytes, label) {
+  if (totalBytes > maxTotalResponseBytes) {
+    throw new BdnsSyncError(
+      502,
+      "bdns_response_too_large",
+      "BDNS returned more data than the connector is allowed to process safely.",
+      `BDNS ${label} exceeded the ${maxTotalResponseBytes} byte total guard.`
+    );
+  }
+}
+
+function createSleepImpl() {
+  return (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function readResponseText(response, maxResponseBytes) {
@@ -174,12 +271,19 @@ async function fetchJson(url, { fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_M
     });
 
     if (!response.ok) {
-      throw new BdnsSyncError(
-        502,
+      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+      const error = new BdnsSyncError(
+        response.status === 429 ? 429 : 502,
         "bdns_http_error",
-        "The official BDNS API could not be retrieved.",
+        response.status === 429
+          ? "The official BDNS API rate-limited this request."
+          : "The official BDNS API could not be retrieved.",
         `BDNS returned HTTP ${response.status} for ${safeUrl}.`
       );
+      error.httpStatus = response.status;
+      error.retryAfterMs = retryAfterMs;
+      error.url = safeUrl;
+      throw error;
     }
 
     const text = await readResponseText(response, maxResponseBytes);
@@ -200,19 +304,25 @@ async function fetchJson(url, { fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_M
   } catch (error) {
     if (error instanceof BdnsSyncError) throw error;
     if (error?.name === "AbortError") {
-      throw new BdnsSyncError(
+      const timeoutError = new BdnsSyncError(
         504,
         "bdns_timeout",
         "The official BDNS API did not respond in time.",
         `BDNS request to ${safeUrl} exceeded ${timeoutMs} ms.`
       );
+      timeoutError.httpStatus = 504;
+      timeoutError.url = safeUrl;
+      throw timeoutError;
     }
-    throw new BdnsSyncError(
+    const availabilityError = new BdnsSyncError(
       503,
       "bdns_unavailable",
       "The official BDNS API is currently unavailable.",
       `BDNS request to ${safeUrl} failed: ${error.message}`
     );
+    availabilityError.httpStatus = 503;
+    availabilityError.url = safeUrl;
+    throw availabilityError;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -237,20 +347,61 @@ function buildDetailUrl(apiBase, code) {
   return url.toString();
 }
 
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
+async function fetchDetailWithRetry(code, context) {
+  const {
+    safeApiBase,
+    fetchImpl,
+    timeoutMs,
+    maxResponseBytes,
+    sleepImpl,
+    pacer,
+    startedAtMs,
+    maxElapsedMs,
+    nowMsImpl
+  } = context;
 
-  async function consume() {
-    while (nextIndex < items.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+  let attempts = 0;
+  while (attempts <= DETAIL_MAX_RETRIES) {
+    await pacer.waitForNextStart();
+    assertElapsedWithinLimit(startedAtMs, maxElapsedMs, nowMsImpl, "detail enrichment");
+    attempts += 1;
+
+    try {
+      const detailResult = await fetchJson(buildDetailUrl(safeApiBase, code), {
+        fetchImpl,
+        timeoutMs,
+        maxResponseBytes
+      });
+      return {
+        ok: true,
+        code,
+        detailResult,
+        attempts
+      };
+    } catch (error) {
+      if (!(error instanceof BdnsSyncError)) throw error;
+      if (!shouldRetryDetailError(error) || attempts > DETAIL_MAX_RETRIES) {
+        return {
+          ok: false,
+          code,
+          error,
+          attempts
+        };
+      }
+
+      const retryDelayMs = resolveRetryDelayMs(error, attempts - 1);
+      if (retryDelayMs > 0) {
+        await sleepImpl(retryDelayMs);
+      }
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => consume()));
-  return results;
+  throw new BdnsSyncError(
+    502,
+    "bdns_detail_enrichment_failed",
+    "The official BDNS call details could not be enriched safely.",
+    `Detail enrichment exhausted retries unexpectedly for code ${code}.`
+  );
 }
 
 export async function syncBdnsCalls(options = {}) {
@@ -261,14 +412,33 @@ export async function syncBdnsCalls(options = {}) {
     maxTotalResponseBytes = DEFAULT_MAX_TOTAL_RESPONSE_BYTES,
     maxElapsedMs = DEFAULT_MAX_ELAPSED_MS,
     detailConcurrency = DEFAULT_DETAIL_CONCURRENCY,
+    detailStartSpacingMs,
     apiBase = BDNS_API_BASE,
-    now = new Date()
+    now = new Date(),
+    sleepImpl = createSleepImpl(),
+    nowMsImpl = Date.now
   } = options;
-  const pages = sanitizePages(options.pages);
-  const pageSize = sanitizePageSize(options.pageSize);
-  const concurrency = sanitizeDetailConcurrency(detailConcurrency);
-  const startedAt = new Date().toISOString();
-  const fetchedAt = new Date().toISOString();
+  const mode = options.mode === "automatic" || options.mode === "reconcile" ? options.mode : "manual";
+  const detailPolicy = DETAIL_REQUEST_POLICY[mode] ?? DETAIL_REQUEST_POLICY.manual;
+  const pages = sanitizePages(
+    mode === "reconcile"
+      ? options.pages ?? DEFAULT_RECONCILE_PAGES
+      : mode === "automatic"
+        ? options.pages ?? DEFAULT_AUTOMATIC_PAGES
+        : options.pages
+  );
+  const pageSize = sanitizePageSize(
+    mode === "reconcile"
+      ? options.pageSize ?? DEFAULT_RECONCILE_PAGE_SIZE
+      : mode === "automatic"
+        ? options.pageSize ?? DEFAULT_AUTOMATIC_PAGE_SIZE
+      : options.pageSize
+  );
+  const concurrency = Math.min(detailPolicy.concurrency, sanitizeDetailConcurrency(detailConcurrency));
+  const resolvedDetailSpacingMs = sanitizeSpacingMs(detailStartSpacingMs, detailPolicy.spacingMs);
+  const startedAtMs = nowMsImpl();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const fetchedAt = new Date(startedAtMs).toISOString();
   const safeApiBase = assertAllowedBdnsUrl(apiBase, "BDNS API base");
   const discoveryRecords = [];
   let totalBytes = 0;
@@ -281,24 +451,8 @@ export async function syncBdnsCalls(options = {}) {
     });
     discoveryRecords.push(...normalizeArrayPayload(pageResult.payload, "discovery"));
     totalBytes += pageResult.byteLength ?? 0;
-
-    if (totalBytes > maxTotalResponseBytes) {
-      throw new BdnsSyncError(
-        502,
-        "bdns_response_too_large",
-        "BDNS returned more data than the connector is allowed to process safely.",
-        `BDNS discovery exceeded the ${maxTotalResponseBytes} byte total guard.`
-      );
-    }
-
-    if (Date.now() - Date.parse(startedAt) > maxElapsedMs) {
-      throw new BdnsSyncError(
-        504,
-        "bdns_timeout",
-        "The official BDNS API did not respond in time.",
-        `BDNS discovery exceeded the ${maxElapsedMs} ms total elapsed guard.`
-      );
-    }
+    assertTotalBytesWithinLimit(totalBytes, maxTotalResponseBytes, "discovery");
+    assertElapsedWithinLimit(startedAtMs, maxElapsedMs, nowMsImpl, "discovery");
   }
 
   const allCodes = discoveryRecords.map((record) => extractBdnsCode(record)).filter(Boolean);
@@ -307,48 +461,44 @@ export async function syncBdnsCalls(options = {}) {
   const truncated = detailCodes.length < uniqueCodes.length;
   const detailFailures = [];
   const successfulDetails = [];
-
-  const detailResults = await mapWithConcurrency(detailCodes, concurrency, async (code) => {
-    try {
-      const detailResult = await fetchJson(buildDetailUrl(safeApiBase, code), {
-        fetchImpl,
-        timeoutMs,
-        maxResponseBytes
-      });
-      totalBytes += detailResult.byteLength ?? 0;
-      if (totalBytes > maxTotalResponseBytes) {
-        throw new BdnsSyncError(
-          502,
-          "bdns_response_too_large",
-          "BDNS returned more data than the connector is allowed to process safely.",
-          `BDNS discovery and detail enrichment exceeded the ${maxTotalResponseBytes} byte total guard.`
-        );
-      }
-      if (Date.now() - Date.parse(startedAt) > maxElapsedMs) {
-        throw new BdnsSyncError(
-          504,
-          "bdns_timeout",
-          "The official BDNS API did not respond in time.",
-          `BDNS sync exceeded the ${maxElapsedMs} ms total elapsed guard.`
-        );
-      }
-
-      const record = normalizeDetailPayload(detailResult.payload, code);
-      successfulDetails.push(record);
-      return { ok: true, code };
-    } catch (error) {
-      if (error instanceof BdnsSyncError) {
-        detailFailures.push({
-          code,
-          message: error.message,
-          adminMessage: error.adminMessage
-        });
-        return { ok: false, code, error };
-      }
-
-      throw error;
-    }
+  const pacer = createDetailStartPacer({
+    spacingMs: resolvedDetailSpacingMs,
+    sleepImpl,
+    nowMsImpl
   });
+  const detailResults = [];
+  const detailContext = {
+    safeApiBase,
+    fetchImpl,
+    timeoutMs,
+    maxResponseBytes,
+    sleepImpl,
+    pacer,
+    startedAtMs,
+    maxElapsedMs,
+    nowMsImpl
+  };
+
+  for (const code of detailCodes) {
+    const result = await fetchDetailWithRetry(code, detailContext);
+    detailResults.push(result);
+
+    if (result.ok) {
+      totalBytes += result.detailResult.byteLength ?? 0;
+      assertTotalBytesWithinLimit(totalBytes, maxTotalResponseBytes, "discovery and detail enrichment");
+      assertElapsedWithinLimit(startedAtMs, maxElapsedMs, nowMsImpl, "sync");
+      const record = normalizeDetailPayload(result.detailResult.payload, code);
+      successfulDetails.push(record);
+      continue;
+    }
+
+    detailFailures.push({
+      code,
+      message: result.error.message,
+      adminMessage: result.error.adminMessage,
+      attempts: result.attempts
+    });
+  }
 
   if (detailFailures.length && successfulDetails.length === 0 && detailCodes.length > 0) {
     throw new BdnsSyncError(
@@ -367,15 +517,17 @@ export async function syncBdnsCalls(options = {}) {
 
   return {
     connector: "bdns",
-    mode: "manual",
+    mode,
     startedAt,
-    completedAt: new Date().toISOString(),
+    completedAt: new Date(nowMsImpl()).toISOString(),
     fetchedAt,
     apiBase: safeApiBase,
     pagesRequested: pages,
     pageSizeRequested: pageSize,
     pagesFetched: pages,
     pageSize,
+    detailConcurrency: concurrency,
+    detailStartSpacingMs: resolvedDetailSpacingMs,
     discoveryCount: discoveryRecords.length,
     uniqueCodes: uniqueCodes.length,
     detailsRequested: detailCodes.length,

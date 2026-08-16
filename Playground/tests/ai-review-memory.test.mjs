@@ -198,6 +198,87 @@ test("saved AI verification persists through reload, keeps company scope, and do
   }
 });
 
+test("Saved route reuses the existing AI verification flow, stays scoped by company, and does not auto-run on open", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const state = createTwoCompanyState();
+    state.savedOpportunityIds = ["opp-efficiency-grant"];
+    const storageAdapter = createMockStorageAdapter();
+    const store = createStore({ storageAdapter });
+    store.replace(state);
+    const root = createRoot();
+    let verificationCalls = 0;
+
+    startApp(root, {
+      runtime: createRuntime(),
+      store,
+      services: {
+        async runAiVerification({ company }) {
+          verificationCalls += 1;
+          return createAiVerificationResponse({
+            notes: `Saved review for ${company.legalName}.`
+          });
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "saved" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.equal(verificationCalls, 0);
+    assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
+    assert.match(root.innerHTML, /Run AI verification/);
+    assert.match(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
+
+    await clickAction(root, { action: "ai-verify", id: "opp-efficiency-grant" });
+
+    const savedRun = getAiRunByPair(store, "company-demo", "opp-efficiency-grant");
+    assert.equal(verificationCalls, 1);
+    assert.ok(savedRun);
+    assert.match(root.innerHTML, /Saved review for Instalaciones Demo Tarragona SL\./);
+    assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
+
+    const reloadedStore = createStore({ storageAdapter });
+    const reloadRoot = createRoot();
+    let reloadCalls = 0;
+    startApp(reloadRoot, {
+      runtime: createRuntime(),
+      store: reloadedStore,
+      services: {
+        async runAiVerification() {
+          reloadCalls += 1;
+          return createAiVerificationResponse();
+        }
+      }
+    });
+
+    clickAction(reloadRoot, { action: "route", route: "saved" });
+    clickAction(reloadRoot, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.equal(reloadCalls, 0);
+    assert.match(reloadRoot.innerHTML, /AI reviewed/);
+    assert.match(reloadRoot.innerHTML, /Saved review for Instalaciones Demo Tarragona SL\./);
+
+    changeActiveCompany(reloadRoot, "company-alt");
+    clickAction(reloadRoot, { action: "route", route: "saved" });
+    clickAction(reloadRoot, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(reloadRoot.innerHTML, /No AI review yet/);
+    assert.doesNotMatch(reloadRoot.innerHTML, /Saved review for Instalaciones Demo Tarragona SL\./);
+
+    changeActiveCompany(reloadRoot, "company-demo");
+    clickAction(reloadRoot, { action: "route", route: "saved" });
+    clickAction(reloadRoot, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(reloadRoot.innerHTML, /AI reviewed/);
+    assert.match(reloadRoot.innerHTML, /Saved review for Instalaciones Demo Tarragona SL\./);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("AI verification memory stays isolated by company and by opportunity", async () => {
   const previousWindow = globalThis.window;
   globalThis.window = {};

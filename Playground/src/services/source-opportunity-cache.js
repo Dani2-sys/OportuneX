@@ -103,21 +103,22 @@ function normalizeTimestamp(value) {
 export function createConnectorState(connector, overrides = {}) {
   const normalizedConnector = normalizeConnector(connector, "placsp");
   const record = isPlainObject(overrides) ? overrides : {};
+  const usesFeedCursor = normalizedConnector === "placsp";
   return {
     connector: normalizedConnector,
     lastSuccessfulSyncAt: normalizeTimestamp(record.lastSuccessfulSyncAt),
     lastAutomaticSyncAt: normalizeTimestamp(record.lastAutomaticSyncAt),
     lastManualSyncAt: normalizeTimestamp(record.lastManualSyncAt),
     lastReconciliationAt: normalizeTimestamp(record.lastReconciliationAt),
-    lastFeedUpdated: normalizeTimestamp(record.lastFeedUpdated),
-    entryUpdatedWatermark: normalizeTimestamp(record.entryUpdatedWatermark),
+    lastFeedUpdated: usesFeedCursor ? normalizeTimestamp(record.lastFeedUpdated) : null,
+    entryUpdatedWatermark: usesFeedCursor ? normalizeTimestamp(record.entryUpdatedWatermark) : null,
     lastRunMode: typeof record.lastRunMode === "string" ? record.lastRunMode : null,
     lastPagesFetched: Number.isFinite(Number(record.lastPagesFetched)) ? Math.max(0, Number(record.lastPagesFetched)) : 0,
     lastErrorAt: normalizeTimestamp(record.lastErrorAt),
     lastErrorCode: typeof record.lastErrorCode === "string" ? record.lastErrorCode : null,
     autoRefreshEnabled: record.autoRefreshEnabled !== false,
     truncated: typeof record.truncated === "boolean" ? record.truncated : false,
-    cursorReached: typeof record.cursorReached === "boolean" ? record.cursorReached : null
+    cursorReached: usesFeedCursor && typeof record.cursorReached === "boolean" ? record.cursorReached : null
   };
 }
 

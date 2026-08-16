@@ -962,6 +962,157 @@ test("startup hydrates cached PLACSP opportunities and reconnects saved ids from
   }
 });
 
+test("Saved route keeps the user on Saved, shows the full detail panel, and reselects safely after unsaving the selected item", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    let aiCalls = 0;
+
+    startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        async runAiVerification() {
+          aiCalls += 1;
+          return {};
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "save", id: "opp-efficiency-grant" });
+    clickAction(root, { action: "route", route: "saved" });
+
+    assert.equal(aiCalls, 0);
+    assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
+    assert.match(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
+
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
+    assert.match(root.innerHTML, /AI review/);
+    assert.match(root.innerHTML, /Run AI verification/);
+
+    clickAction(root, { action: "save", id: "opp-efficiency-grant" });
+
+    assert.deepEqual(store.getState().savedOpportunityIds, ["opp-electrical-maintenance"]);
+    assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
+    assert.match(root.innerHTML, /Electrical maintenance contract — Tarragona municipal facilities/);
+    assert.match(root.innerHTML, /AI review/);
+    assert.doesNotMatch(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("Saved route keeps a low-rank saved opportunity fully analysed and accessible outside the normal surfaced shortlist", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    function makeFunnelPlacspOpportunity(index, overrides = {}) {
+      const base = makeCachedPlacspOpportunity({
+        id: `placsp:saved-funnel-${index}`,
+        sourceOpportunityId: `https://contrataciondelestado.es/sindicacion/saved-funnel-${index}`,
+        sourceNoticeVersionId: `placsp-version:saved-funnel-${index}`,
+        title: `Relevant electrical opportunity ${index}`,
+        referenceNumber: `PLACSP-SAVED-FUNNEL-${index}`
+      });
+      return {
+        ...base,
+        title: overrides.title ?? base.title,
+        description:
+          overrides.description ??
+          "Electrical maintenance, low-voltage work, HVAC controls and emergency systems support.",
+        cpvCodes: overrides.cpvCodes ?? ["50711000", "45315300"],
+        keywords: overrides.keywords ?? ["electrical maintenance", "hvac"],
+        location:
+          overrides.location ?? {
+            municipality: "Tarragona",
+            province: "Tarragona",
+            autonomousCommunity: "Catalonia",
+            display: "Tarragona"
+          },
+        ...overrides
+      };
+    }
+
+    const savedLowScore = makeFunnelPlacspOpportunity(999, {
+      id: "placsp:saved-low-score-opportunity",
+      title: "Saved low-score opportunity",
+      description: "Generic road maintenance archive with weak fit to the active company.",
+      cpvCodes: ["45233252"],
+      keywords: ["roadworks", "asphalt"],
+      location: {
+        municipality: "Seville",
+        province: "Seville",
+        autonomousCommunity: "Andalusia",
+        display: "Seville"
+      }
+    });
+    const opportunities = [
+      savedLowScore,
+      ...Array.from({ length: 339 }, (_, index) =>
+        index % 9 === 0
+          ? makeFunnelPlacspOpportunity(index + 1)
+          : makeFunnelPlacspOpportunity(index + 1, {
+              title: `Irrelevant civil package ${index + 1}`,
+              description: "Civil engineering, asphalt resurfacing and kerb works.",
+              cpvCodes: ["45233252"],
+              keywords: ["roadworks", "asphalt"],
+              location: {
+                municipality: "Seville",
+                province: "Seville",
+                autonomousCommunity: "Andalusia",
+                display: "Seville"
+              }
+            })
+      )
+    ];
+
+    const initialState = createDemoState();
+    initialState.opportunities = opportunities;
+    initialState.savedOpportunityIds = [savedLowScore.id];
+
+    const store = createStore({
+      storageAdapter: createMockStorageAdapter(JSON.stringify(initialState))
+    });
+    const root = createRoot();
+    let aiCalls = 0;
+    const app = startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        async runAiVerification() {
+          aiCalls += 1;
+          return {};
+        }
+      }
+    });
+
+    await app.whenSourceCacheReady();
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    assert.doesNotMatch(root.innerHTML, /Saved low-score opportunity/);
+
+    clickAction(root, { action: "route", route: "saved" });
+    assert.equal(aiCalls, 0);
+    assert.match(root.innerHTML, /Saved low-score opportunity/);
+
+    clickAction(root, { action: "select", id: savedLowScore.id });
+
+    assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
+    assert.match(root.innerHTML, /Saved low-score opportunity/);
+    assert.match(root.innerHTML, /AI review/);
+    assert.match(root.innerHTML, /Run AI verification/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("search wider is company-scoped and reuses deterministic cache instead of triggering AI", async () => {
   const previousWindow = globalThis.window;
   globalThis.window = {};
