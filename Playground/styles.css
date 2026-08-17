@@ -79,6 +79,7 @@ select:focus-visible,
 textarea:focus-visible,
 a:focus-visible,
 summary:focus-visible,
+.detail-panel:focus-visible,
 .opportunity-card:focus-visible,
 .mini-list-item:focus-visible {
   outline: none;
@@ -941,6 +942,11 @@ textarea {
   top: 24px;
   align-self: start;
   min-width: 0;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .detail-report-card {
@@ -1393,6 +1399,10 @@ th {
   .detail-panel {
     position: static;
     top: auto;
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: auto;
+    scrollbar-gutter: auto;
   }
 
   .card-grid.four,

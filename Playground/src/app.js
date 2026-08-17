@@ -3226,7 +3226,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
   if (!selected || !raw) {
     if (derived.selectedRejected) {
       return `
-        <aside class="detail-panel">
+        <aside class="detail-panel" tabindex="0" aria-label="Opportunity report">
           <article class="card">
             <div class="section-heading">
               <h3>${escapeHtml(derived.selectedRejected.opportunity.title)}</h3>
@@ -3238,7 +3238,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
         </aside>
       `;
     }
-    return `<aside class="detail-panel"><article class="card"><p class="empty-state">Select an opportunity to view its assessment.</p></article></aside>`;
+    return `<aside class="detail-panel" tabindex="0" aria-label="Opportunity report"><article class="card"><p class="empty-state">Select an opportunity to view its assessment.</p></article></aside>`;
   }
 
   const decision = buildDecisionSummary(selected);
@@ -3255,7 +3255,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
       : "Published opportunity value";
 
   return `
-    <aside class="detail-panel">
+    <aside class="detail-panel" tabindex="0" aria-label="Opportunity report">
       <article class="card detail-report-card">
         <div class="detail-shell-header">
           <div>

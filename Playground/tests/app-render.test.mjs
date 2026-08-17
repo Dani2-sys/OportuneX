@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { startApp } from "../src/app.js";
 import { getEvaluationNow } from "../src/clock.js";
@@ -782,6 +783,19 @@ test("empty structured opportunity import marks the status chip as Error and val
     globalThis.window = previousWindow;
     globalThis.FormData = previousFormData;
   }
+});
+
+test("detail panel uses bounded desktop scrolling and resets to normal flow at the single-column breakpoint", async () => {
+  const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+
+  assert.match(
+    css,
+    /\.detail-panel\s*\{[\s\S]*?max-height:\s*calc\(100vh - 48px\);[\s\S]*?overflow-y:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;[\s\S]*?scrollbar-gutter:\s*stable;[\s\S]*?\}/
+  );
+  assert.match(
+    css,
+    /@media \(max-width: 1200px\)\s*\{[\s\S]*?\.detail-panel\s*\{[\s\S]*?position:\s*static;[\s\S]*?top:\s*auto;[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*visible;[\s\S]*?overscroll-behavior:\s*auto;[\s\S]*?scrollbar-gutter:\s*auto;[\s\S]*?\}/
+  );
 });
 
 test("structured opportunity import by submit shows the imported opportunity in the detail panel immediately", () => {
