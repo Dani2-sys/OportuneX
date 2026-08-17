@@ -229,6 +229,44 @@ function makeCachedPlacspOpportunity(overrides = {}) {
   };
 }
 
+function makeLongTitleTechnicalOpportunity() {
+  const rawRequirement =
+    "Specific tenderer requirement: 1: http://contrataciondelestado.es/codice/PlaceTendererQualification/CapacidadDeObrar: Capacidad de obrar";
+
+  return {
+    ...makeNoLotUiOpportunity(),
+    id: "opp-long-technical-title",
+    title:
+      "Servicio integral de mantenimiento, mejora, reforma, adecuacion normativa, eficiencia energetica, supervisión tecnica, documentacion de obra y soporte operativo para infraestructuras electricas municipales, edificios auxiliares y equipamientos especiales con alcance plurianual",
+    issuingOrganisation:
+      "Consorci Metropolita de Serveis Energetics i Infraestructures Publiques amb una denominacio administrativa excepcionalment llarga",
+    requirements: [
+      {
+        id: "req-capacidad-obrar",
+        kind: "custom",
+        label: rawRequirement,
+        mandatory: true,
+        gating: "hard",
+        question: `Please verify whether the company satisfies the published requirement: ${rawRequirement}.`,
+        evidenceIds: ["ev-long-title-req"],
+        defaultStatus: "needs_verification"
+      }
+    ],
+    requiredDocuments: ["Administrative dossier"],
+    evidence: [
+      ...makeUiEvidence(),
+      {
+        id: "ev-long-title-req",
+        fieldKey: "requirements",
+        excerpt: rawRequirement,
+        sourceId: "ui-source-1",
+        sourceType: "official_notice",
+        confidence: 0.96
+      }
+    ]
+  };
+}
+
 function createMockStorageAdapter(initialRaw = null) {
   let raw = initialRaw;
   return {
@@ -405,7 +443,6 @@ function assertDecisionConsistency(root, store, scenario) {
   };
   const analysed = portfolio.analysed.find((item) => item.opportunityId === scenario.id);
   const actionLabel = ACTION_COPY[scenario.code] ?? analysed?.decision?.recommendedAction?.label ?? scenario.code;
-  const encodedVerdict = escapeHtml(analysed?.executiveVerdict ?? "");
   const encodedReason = escapeHtml(analysed?.decision?.mainReason ?? "");
   const encodedQuestion = escapeHtml(analysed?.decision?.mainQuestion ?? "");
   const encodedCardReason = escapeHtml(expectedCustomerWhy(analysed));
@@ -437,10 +474,12 @@ function assertDecisionConsistency(root, store, scenario) {
   clickAction(root, { action: "select", id: scenario.id });
   clickAction(root, { action: "tab", tab: "report" });
 
-  assert.match(root.innerHTML, new RegExp(`<h3>${escapeRegExp(analysed.displayTitle)}<\\/h3>`));
+  assert.match(root.innerHTML, new RegExp(`<h3 class="detail-report-title">${escapeRegExp(analysed.displayTitle)}<\\/h3>`));
   assert.match(
     root.innerHTML,
-    new RegExp(`<span>Recommended action<\\/span>\\s*<strong>${escapeRegExp(actionLabel)}<\\/strong>`)
+    new RegExp(
+      `<span class="decision-kicker">Recommended action<\\/span>[\\s\\S]*?${escapeRegExp(actionLabel)}`
+    )
   );
   assert.match(
     root.innerHTML,
@@ -448,13 +487,59 @@ function assertDecisionConsistency(root, store, scenario) {
       `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
     )
   );
-  assert.match(root.innerHTML, new RegExp(`<span>Main reason<\\/span>\\s*<p>${escapeRegExp(encodedReason)}<\\/p>`));
-  assert.match(root.innerHTML, new RegExp(`<span>Main blocker\\/question<\\/span>\\s*<p>${escapeRegExp(encodedQuestion)}<\\/p>`));
-  assert.match(root.innerHTML, new RegExp(`<\\/div>\\s*<p>${escapeRegExp(encodedVerdict)}<\\/p>`));
-  if (scenario.potentialHardBlocker) {
-    assert.match(root.innerHTML, new RegExp(`Potential hard blocker:[\\s\\S]*?${escapeRegExp(scenario.potentialHardBlocker)}`));
-  }
+  assert.match(root.innerHTML, new RegExp(`<p class="decision-reason">${escapeRegExp(encodedReason)}<\\/p>`));
+  assert.match(root.innerHTML, new RegExp(`<span>Before proceeding<\\/span>\\s*<p>${escapeRegExp(encodedQuestion)}<\\/p>`));
 }
+
+test("customer navigation keeps only the core routes prominent and nests admin routes under Developer tools", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    const navMatch = root.innerHTML.match(/<nav class="nav-list" aria-label="Main">([\s\S]*?)<\/nav>/);
+    assert.ok(navMatch, "Expected customer sidebar navigation");
+
+    const customerNav = navMatch[1];
+    assert.match(customerNav, /data-route="overview"[\s\S]*?<span>Overview<\/span>/);
+    assert.match(customerNav, /data-route="opportunities"[\s\S]*?<span>Opportunities<\/span>/);
+    assert.match(customerNav, /data-route="saved"[\s\S]*?<span>Saved<\/span>/);
+    assert.match(customerNav, /data-route="company"[\s\S]*?<span>Company<\/span>/);
+    assert.doesNotMatch(customerNav, /data-route="lab"/);
+    assert.doesNotMatch(customerNav, /data-route="debug"/);
+    assert.match(root.innerHTML, /<summary>Developer tools<\/summary>/);
+    assert.match(root.innerHTML, /data-route="lab"/);
+    assert.match(root.innerHTML, /data-route="debug"/);
+    assert.doesNotMatch(root.innerHTML, /data-control="developer-tools" open/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("Overview leads with customer decision copy and hides funnel diagnostics while keeping the find-more CTA", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    assert.match(root.innerHTML, /<p class="eyebrow">Overview<\/p>/);
+    assert.match(root.innerHTML, /deserves your attention|deserve your attention|No opportunity needs immediate attention/);
+    assert.match(root.innerHTML, /Top opportunities/);
+    assert.match(root.innerHTML, /Find more opportunities/);
+    assert.doesNotMatch(root.innerHTML, /Search wider/i);
+    assert.doesNotMatch(root.innerHTML, /Stored universe/i);
+    assert.doesNotMatch(root.innerHTML, /Candidate pool/i);
+    assert.doesNotMatch(root.innerHTML, /Current depth/i);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
 
 test("company page renders a sparse imported prospect profile without throwing", () => {
   const previousWindow = globalThis.window;
@@ -825,8 +910,7 @@ test("card, detail, bucket and sorting state stay aligned across actionable, ver
         id: "opp-multi-lot-framework",
         code: "VERIFY_BEFORE_DECIDING",
         scope: "needs_verification",
-        sort: "match",
-        potentialHardBlocker: "Civil liability insurance"
+        sort: "match"
       },
       {
         id: "opp-expired-maintenance",
@@ -879,6 +963,119 @@ test("verify-first customer cards keep positive relevance under Why it matters a
         `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.decision.mainReason))}<\\/p>`
       )
     );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("customer opportunity cards stay decision-first, show key facts, and keep no-AI states out of card copy", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "worth_attention" });
+    const cardMatch = root.innerHTML.match(
+      /<article\s+class="opportunity-card[^"]*"[\s\S]*?data-id="opp-efficiency-grant"[\s\S]*?<\/article>/
+    );
+
+    assert.ok(cardMatch, "Expected the highlighted customer opportunity card");
+    assert.match(
+      cardMatch[0],
+      /Investigate Now[\s\S]*?Strong Fit · \d+% match[\s\S]*?<span>Value<\/span>[\s\S]*?<span>Deadline<\/span>[\s\S]*?<span>Location<\/span>[\s\S]*?<strong>Why it matters<\/strong>[\s\S]*?<strong>Needs checking<\/strong>/
+    );
+    assert.doesNotMatch(
+      cardMatch[0],
+      /(No AI review yet|Run AI verification|legacy unscoped AI review)/i
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("long card titles and organisation names keep full text in markup while exposing clamp classes", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    const longOpportunity = makeLongTitleTechnicalOpportunity();
+    nextState.opportunities = [longOpportunity];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "needs_verification" });
+
+    assert.match(root.innerHTML, new RegExp(escapeRegExp(longOpportunity.title)));
+    assert.match(root.innerHTML, new RegExp(escapeRegExp(longOpportunity.issuingOrganisation)));
+    assert.match(
+      root.innerHTML,
+      /data-id="opp-long-technical-title"[\s\S]*?<h3 class="opportunity-card-title">[\s\S]*?<\/h3>[\s\S]*?<p class="opportunity-subline opportunity-card-subline">/
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("technical requirement boilerplate is cleaned from the high-level decision header while raw requirement detail remains below", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [makeLongTitleTechnicalOpportunity()];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "needs_verification" });
+    clickAction(root, { action: "select", id: "opp-long-technical-title" });
+
+    const decisionHero = root.innerHTML.match(/<div class="decision-hero">([\s\S]*?)<div class="detail-key-facts">/);
+    assert.ok(decisionHero, "Expected decision hero markup");
+    assert.match(decisionHero[1], /Capacidad de obrar/);
+    assert.doesNotMatch(decisionHero[1], /contrataciondelestado\.es\/codice/i);
+    assert.doesNotMatch(decisionHero[1], /Specific tenderer requirement:\s*1:/i);
+
+    assert.match(root.innerHTML, /Full official title/);
+    assert.match(root.innerHTML, /Specific tenderer requirement: 1: http:\/\/contrataciondelestado\.es\/codice\/PlaceTendererQualification\/CapacidadDeObrar: Capacidad de obrar/);
+    assert.equal((decisionHero[1].match(/class="detail-alert"/g) ?? []).length, 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("customer topbar removes runtime AI-status pills while keeping the explicit AI verification path in the report", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    assert.doesNotMatch(root.innerHTML, /AI configured|Mock verification|AI connected|AI unavailable/i);
+    assert.match(root.innerHTML, /Confirmed company/);
+    assert.match(root.innerHTML, /worth attention/);
+    assert.match(root.innerHTML, /need verification/);
+    assert.match(root.innerHTML, /saved/);
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /Run AI verification/);
+    assert.doesNotMatch(root.innerHTML, /AI configured|Mock verification|AI connected|AI unavailable/i);
   } finally {
     globalThis.window = previousWindow;
   }
@@ -1193,7 +1390,9 @@ test("search wider is company-scoped and reuses deterministic cache instead of t
 
     let metrics = analysisCache.getMetrics();
     assert.equal(metrics.lastRunOpportunityCount, 75);
-    assert.match(root.innerHTML, /Search wider/i);
+    assert.match(root.innerHTML, /Find more opportunities/i);
+    assert.match(root.innerHTML, /Analyse another 75 potential matches\./);
+    assert.doesNotMatch(root.innerHTML, /Search wider/i);
 
     clickAction(root, { action: "search-wider" });
     metrics = analysisCache.getMetrics();
@@ -1211,6 +1410,88 @@ test("search wider is company-scoped and reuses deterministic cache instead of t
     assert.equal(metrics.lastRunOpportunityCount, 150);
     assert.equal(metrics.lastRunHits, 150);
     assert.equal(metrics.lastRunMisses, 0);
+    assert.equal(aiCalls, 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("hiding and reopening the report preserves selection and never triggers AI", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    let aiCalls = 0;
+
+    startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        async runAiVerification() {
+          aiCalls += 1;
+          return {};
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /Opportunity report/);
+    assert.match(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
+
+    clickAction(root, { action: "collapse-report" });
+
+    assert.equal(aiCalls, 0);
+    assert.doesNotMatch(root.innerHTML, /Opportunity report/);
+    assert.match(root.innerHTML, /data-action="open-report" aria-expanded="false"/);
+    assert.match(root.innerHTML, /View opportunity/);
+
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.equal(aiCalls, 0);
+    assert.match(root.innerHTML, /Opportunity report/);
+    assert.match(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
+    assert.match(root.innerHTML, /data-action="collapse-report" aria-expanded="true"/);
+
+    clickAction(root, { action: "collapse-report" });
+    clickAction(root, { action: "open-report" });
+
+    assert.equal(aiCalls, 0);
+    assert.match(root.innerHTML, /Opportunity report/);
+    assert.match(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("opening customer routes never triggers AI verification calls", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    let aiCalls = 0;
+
+    startApp(root, {
+      runtime: DEFAULT_RUNTIME,
+      store,
+      services: {
+        async runAiVerification() {
+          aiCalls += 1;
+          return {};
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "overview" });
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "route", route: "saved" });
+    clickAction(root, { action: "route", route: "company" });
+
     assert.equal(aiCalls, 0);
   } finally {
     globalThis.window = previousWindow;

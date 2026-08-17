@@ -396,7 +396,7 @@ test("AI verify button disables during an active request and blocks duplicate ca
 
     assert.equal(calls, 1);
     assert.match(root.innerHTML, /Verifying\.\.\./);
-    assert.match(root.innerHTML, /data-action="ai-verify" data-id="opp-efficiency-grant" disabled/);
+    assert.match(root.innerHTML, /data-action="ai-verify"[^>]*data-id="opp-efficiency-grant"[^>]*disabled/);
 
     await clickAction(root, { action: "ai-verify", id: "opp-efficiency-grant" });
     assert.equal(calls, 1);

@@ -125,10 +125,20 @@ const AI_REVIEW_STATUS_COPY = {
 };
 
 const CUSTOMER_WHY_BLOCKLIST = /potential hard blocker|eligibility requirements not yet assessed|confirmed eligibility failure|deadline passed|already awarded|cancelled|suspended|unrelated capability|no further action is recommended/i;
+const TECHNICAL_REQUIREMENT_URL_RE = /https?:\/\/[^\s)]+/i;
+const TECHNICAL_REQUIREMENT_URL_GLOBAL_RE = /https?:\/\/[^\s)]+/gi;
+const TECHNICAL_REQUIREMENT_PART_RE =
+  /^(specific tenderer requirement|qualification requirement|technical qualification|financial qualification)$/i;
+const TECHNICAL_REQUIREMENT_PREFIX_RE =
+  /\b(specific tenderer requirement|qualification requirement|technical qualification|financial qualification)\b/i;
+const PUBLISHED_REQUIREMENT_PREFIX_RE =
+  /^please verify whether the company satisfies the published requirement:\s*/i;
 
 const UI_STATE_DEFAULTS = {
   route: "overview",
   selectedOpportunityId: null,
+  detailPanelCollapsed: false,
+  developerToolsOpen: false,
   opportunityScope: "worth_attention",
   filterType: "all",
   filterRecommendation: "all",
@@ -173,6 +183,14 @@ function getCompany(state) {
   return state.companyProfiles.find((company) => company.id === state.activeCompanyId) ?? state.companyProfiles[0];
 }
 
+function isAdminRoute(route = uiState.route) {
+  return ADMIN_NAV_ITEMS.some((item) => item.id === route);
+}
+
+function isCustomerRoute(route = uiState.route) {
+  return CUSTOMER_NAV_ITEMS.some((item) => item.id === route);
+}
+
 function recommendationTone(label) {
   switch (label) {
     case "EXCELLENT_FIT":
@@ -207,11 +225,108 @@ function primaryOpenIssue(item) {
   return item?.potentialHardBlockers?.[0] ?? item?.unknowns?.[0] ?? item?.blockers?.[0] ?? null;
 }
 
+function collapseWhitespace(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function stripTechnicalRequirementBoilerplate(text) {
+  const original = collapseWhitespace(text);
+  if (!original) return "";
+
+  const cleaned = original.replace(TECHNICAL_REQUIREMENT_URL_GLOBAL_RE, " ");
+  const filteredParts = cleaned
+    .split(/\s*:\s*/)
+    .map((part) => collapseWhitespace(part))
+    .filter(Boolean)
+    .filter((part) => !TECHNICAL_REQUIREMENT_PART_RE.test(part))
+    .filter((part) => !/^\d+$/.test(part));
+
+  const candidate = collapseWhitespace(filteredParts.join(": ")).replace(/^[\s:;,.()-]+|[\s:;,.()-]+$/g, "");
+  return candidate || original;
+}
+
+function hasTechnicalRequirementBoilerplate(text) {
+  const value = collapseWhitespace(text);
+  return (
+    Boolean(value) &&
+    (TECHNICAL_REQUIREMENT_URL_RE.test(value) ||
+      TECHNICAL_REQUIREMENT_PREFIX_RE.test(value) ||
+      PUBLISHED_REQUIREMENT_PREFIX_RE.test(value))
+  );
+}
+
+function normalizeCustomerComparisonText(text) {
+  return stripTechnicalRequirementBoilerplate(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function isDuplicateHighLevelText(candidate, references = []) {
+  const normalizedCandidate = normalizeCustomerComparisonText(candidate);
+  if (!normalizedCandidate) return true;
+  return references.some((reference) => {
+    const normalizedReference = normalizeCustomerComparisonText(reference);
+    if (!normalizedReference) return false;
+    return (
+      normalizedReference === normalizedCandidate ||
+      normalizedReference.includes(normalizedCandidate) ||
+      normalizedCandidate.includes(normalizedReference)
+    );
+  });
+}
+
+function presentCustomerDecisionText(text, { issueTitle = "", verificationFallback = false } = {}) {
+  const original = collapseWhitespace(text);
+  if (!original) return "";
+
+  const cleanedTitle = stripTechnicalRequirementBoilerplate(issueTitle);
+  const hadTechnicalBoilerplate = hasTechnicalRequirementBoilerplate(original);
+
+  if (!hadTechnicalBoilerplate && !/^potential hard blocker:\s*/i.test(original)) {
+    return original;
+  }
+
+  const withoutPublishedPrefix = collapseWhitespace(original.replace(PUBLISHED_REQUIREMENT_PREFIX_RE, ""));
+  const cleaned = stripTechnicalRequirementBoilerplate(withoutPublishedPrefix);
+
+  if (/^potential hard blocker:\s*/i.test(original) && cleanedTitle) {
+    return `Potential hard blocker: ${cleanedTitle} not yet verified.`;
+  }
+
+  if (verificationFallback && cleanedTitle && hadTechnicalBoilerplate) {
+    return `${cleanedTitle} has not yet been verified.`;
+  }
+
+  if (cleaned && cleaned !== cleanedTitle) return cleaned;
+  if (cleanedTitle && hadTechnicalBoilerplate) return `${cleanedTitle} has not yet been verified.`;
+  return cleaned || original;
+}
+
 function actionTone(action) {
   if (action === "INVESTIGATE_NOW") return "good";
   if (action === "VERIFY_BEFORE_DECIDING") return "warn";
   if (action === "DO_NOT_PURSUE") return "bad";
   return "neutral";
+}
+
+function companyProvenanceLabel(status) {
+  switch (status) {
+    case "company_confirmed":
+      return "Confirmed by you";
+    case "public_verified":
+      return "Publicly verified";
+    case "public_reported":
+      return "From public information";
+    case "conflicting":
+      return "Conflicting sources";
+    case "inferred":
+      return "Needs confirmation";
+    case "unknown":
+      return "Needs confirmation";
+    default:
+      return describeStatus(status);
+  }
 }
 
 function confidenceTone(label) {
@@ -1310,14 +1425,12 @@ function formatFactMeta(fact) {
 
 function renderProfileDatum({ label, value, status, meta = "", note = "", stale = false }) {
   return `
-    <article class="profile-datum">
-      <div class="card-topline">
-        ${pill(describeStatus(status), companyStatusTone(status))}
-      </div>
-      <strong>${escapeHtml(label)}</strong>
-      <p>${escapeHtml(value)}</p>
+    <article class="profile-datum company-datum">
+      <span class="profile-label">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small class="datum-provenance">${escapeHtml(companyProvenanceLabel(status))}</small>
       ${meta ? `<small>${meta}</small>` : ""}
-      ${stale ? `<small>May be outdated — company confirmation recommended</small>` : ""}
+      ${stale ? `<small>May be outdated — company confirmation recommended.</small>` : ""}
       ${note ? `<small>${escapeHtml(note)}</small>` : ""}
     </article>
   `;
@@ -1325,14 +1438,256 @@ function renderProfileDatum({ label, value, status, meta = "", note = "", stale 
 
 function renderCapabilitySummary(capability) {
   return `
-    <article class="profile-datum">
-      <div class="card-topline">
-        ${pill(describeStatus(capability.status), companyStatusTone(capability.status))}
-        ${pill(capability.strength ?? capability.level ?? "medium", "neutral")}
+    <article class="profile-datum capability-datum">
+      <div class="capability-datum-topline">
+        <strong>${escapeHtml(capability.label)}</strong>
+        <span class="capability-strength">${escapeHtml(capability.strength ?? capability.level ?? "medium")}</span>
       </div>
-      <strong>${escapeHtml(capability.label)}</strong>
+      <small class="datum-provenance">${escapeHtml(companyProvenanceLabel(capability.status))}</small>
       <p>${escapeHtml(capability.notes ?? "Capability evidence available for matching.")}</p>
     </article>
+  `;
+}
+
+function renderCompanySummaryChip(label, tone = "neutral") {
+  return `<span class="summary-chip ${escapeHtml(tone)}">${escapeHtml(label)}</span>`;
+}
+
+function renderDeveloperTools(route) {
+  const open = isAdminRoute(route) || uiState.developerToolsOpen;
+  return `
+    <details class="developer-tools" data-control="developer-tools" ${open ? "open" : ""}>
+      <summary>Developer tools</summary>
+      <nav class="nav-list nav-list-admin">
+        ${ADMIN_NAV_ITEMS.map(
+          (item) => `
+            <button class="nav-item ${route === item.id ? "active" : ""}" data-action="route" data-route="${item.id}">
+              <span>${escapeHtml(item.label)}</span>
+              <small>Admin</small>
+            </button>
+          `
+        ).join("")}
+      </nav>
+    </details>
+  `;
+}
+
+function renderOpportunityAiState(aiReview) {
+  if (aiReview?.status === "current") {
+    return `<span class="card-ai-state current">AI verified</span>`;
+  }
+  if (aiReview?.status === "stale") {
+    return `<span class="card-ai-state stale">AI review may be outdated</span>`;
+  }
+  return "";
+}
+
+function renderOpportunityFact(label, value) {
+  return `
+    <div class="fact-pill">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderFindMoreOpportunities(derived, { compact = false } = {}) {
+  const batchSize = derived?.funnel?.policy?.expansionBatch ?? ACTIVE_SEARCH_POLICY.expansionBatch;
+  return `
+    <div class="search-depth-cta ${compact ? "compact" : ""}">
+      <div>
+        <strong>Find more opportunities</strong>
+        <p>
+          ${
+            derived.funnel.canSearchWider
+              ? escapeHtml(`Analyse another ${formatNumber(batchSize)} potential matches.`)
+              : "You've reached the current search limit."
+          }
+        </p>
+      </div>
+      ${
+        derived.funnel.canSearchWider
+          ? `<button class="button-secondary" data-action="search-wider">Find more opportunities</button>`
+          : `<span class="inline-note">OportuneX is already analysing the current maximum for this workspace.</span>`
+      }
+    </div>
+  `;
+}
+
+function renderDetailDisclosure(title, content, { open = false } = {}) {
+  return `
+    <details class="detail-disclosure" ${open ? "open" : ""}>
+      <summary>${escapeHtml(title)}</summary>
+      <div class="detail-disclosure-body">
+        ${content}
+      </div>
+    </details>
+  `;
+}
+
+function renderAiVerificationHero(opportunity, match, aiReview, persistence, companyId, showTechnicalPath = false) {
+  const busy = isAiReviewBusy(companyId, opportunity.id);
+  const summary = aiReviewSummary(aiReview, match, persistence);
+  const record = aiReview?.review ?? null;
+  const buttonLabel = aiReview?.buttonLabel ?? "Verify assessment with AI";
+
+  return `
+    <div class="ai-review-card ai-review-hero">
+      <div class="ai-review-hero-header">
+        <div>
+          <h4>AI verification</h4>
+          <p>${escapeHtml(summary.statusMeta.detail)}</p>
+        </div>
+        <div class="card-topline">
+          ${pill(summary.statusMeta.label, summary.statusMeta.tone)}
+          ${record?.completedAt ? pill(summary.savedMode, persistence?.status === "available" ? "neutral" : "warn") : ""}
+        </div>
+      </div>
+      <div class="action-row">
+        <button
+          class="button-primary"
+          data-action="ai-verify"
+          data-id="${opportunity.id}"
+          aria-busy="${busy ? "true" : "false"}"
+          ${busy ? "disabled" : ""}
+        >
+          ${busy ? "Verifying..." : escapeHtml(buttonLabel)}
+        </button>
+        ${showTechnicalPath ? `<button class="ghost-button" data-action="tab" data-tab="debug">Technical details</button>` : `<button class="ghost-button" data-action="route" data-route="debug">Open Analysis Debugger</button>`}
+      </div>
+      ${
+        record
+          ? `
+              <ul class="tight-list">
+                <li>AI verification completed${summary.completedAt ? ` · ${escapeHtml(summary.completedAt)}` : ""}</li>
+                <li>Review status: ${escapeHtml(summary.reviewStatus)}</li>
+                <li>Confidence: ${escapeHtml(summary.confidence)}</li>
+                ${
+                  summary.disagreements.length
+                    ? `<li>Material disagreements: ${escapeHtml(summary.disagreements.slice(0, 3).join("; "))}</li>`
+                    : ""
+                }
+                ${
+                  summary.warnings.length
+                    ? `<li>Warnings: ${escapeHtml(summary.warnings.slice(0, 3).join("; "))}</li>`
+                    : "<li>Warnings: None recorded.</li>"
+                }
+                ${summary.showCorrectedAction ? `<li>AI corrected action: ${escapeHtml(summary.correctedAction)}</li>` : ""}
+                ${summary.showCorrectedFitBand ? `<li>AI corrected fit: ${escapeHtml(summary.correctedFitBand)}</li>` : ""}
+                ${summary.notes ? `<li>Notes: ${escapeHtml(summary.notes)}</li>` : ""}
+              </ul>
+            `
+          : aiReview?.isLegacyAvailable
+            ? `<p class="inline-note">A legacy unscoped AI review exists in debug only. Run a fresh company-scoped review for customer-facing use.</p>`
+            : ""
+      }
+    </div>
+  `;
+}
+
+function formatOpportunityCardDeadline(item) {
+  const deadline = formatDeadline(item.opportunity?.deadline);
+  if (!deadline || deadline === "Deadline not stated") return "Deadline not stated";
+  return deadline;
+}
+
+function renderOpportunityPreview(item, { now, aiReview, persistence, showActions = false } = {}) {
+  const organisation =
+    item.opportunity?.contractingAuthority ||
+    item.opportunity?.issuingOrganisation ||
+    item.primaryContact?.name ||
+    "Organisation not stated";
+  const whyItMatters = customerWhyItMatters(item);
+  const needsChecking = customerNeedsChecking(item);
+  const aiState = renderOpportunityAiState(aiReview);
+  const matchSummary = `${fitBandLabelOf(item)} · ${item.matchScore ?? item.priorityScore ?? 0}% match`;
+
+  return `
+    <article
+      class="opportunity-card ${uiState.selectedOpportunityId === item.opportunityId && showActions ? "selected" : ""}"
+      data-action="select"
+      data-id="${item.opportunityId}"
+      tabindex="0"
+      role="button"
+      aria-label="Open analysis for ${escapeHtml(item.displayTitle)}"
+    >
+      <div class="opportunity-header-row">
+        <div class="opportunity-card-status">
+          ${pill(actionLabelOf(item.decision?.recommendedAction), actionTone(item.decision?.recommendedAction?.code))}
+          <p class="opportunity-fit-summary">${escapeHtml(matchSummary)}</p>
+        </div>
+        <div class="opportunity-card-meta-top">
+          ${aiState}
+          <span class="opportunity-type-label">${escapeHtml(OPPORTUNITY_TYPES[item.opportunity?.type] ?? "Opportunity")}</span>
+        </div>
+      </div>
+      <h3 class="opportunity-card-title">${escapeHtml(item.displayTitle)}</h3>
+      <p class="opportunity-subline opportunity-card-subline">${escapeHtml(organisation)}</p>
+      <div class="opportunity-metrics">
+        ${renderOpportunityFact("Value", previewValueLabel(item))}
+        ${renderOpportunityFact("Deadline", formatOpportunityCardDeadline(item))}
+        ${renderOpportunityFact("Location", item.locationLabel || "Location not stated")}
+      </div>
+      <div class="opportunity-copy-block">
+        <strong>Why it matters</strong>
+        <p>${escapeHtml(whyItMatters)}</p>
+      </div>
+      <div class="opportunity-copy-block">
+        <strong>Needs checking</strong>
+        <p>${escapeHtml(needsChecking)}</p>
+      </div>
+      <div class="opportunity-footer">
+        <span class="urgency-label">${escapeHtml(urgencyChip(item.opportunity, now))}</span>
+        ${
+          showActions
+            ? `<div class="action-row">
+                <button class="ghost-button" data-action="save" data-id="${item.opportunityId}">
+                  ${(persistence?.savedSet?.has?.(item.opportunityId) ? "Unsave" : "Save")}
+                </button>
+                <button class="button-secondary" data-action="select" data-id="${item.opportunityId}">View opportunity</button>
+              </div>`
+            : `<span class="card-affordance">View opportunity</span>`
+        }
+      </div>
+    </article>
+  `;
+}
+
+function renderNavigation(route, derived) {
+  return `
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark"></div>
+        <div>
+          <span class="eyebrow">OportuneX</span>
+          <h1>${APP_TITLE}</h1>
+        </div>
+      </div>
+      <div class="company-switcher">
+        <label>
+          Active company
+          <select data-control="active-company">
+            ${derived.companies
+              .map(
+                (company) =>
+                  `<option value="${escapeHtml(company.id)}" ${company.id === derived.company.id ? "selected" : ""}>${escapeHtml(company.legalName)}</option>`
+              )
+              .join("")}
+          </select>
+        </label>
+        <small>${escapeHtml(getProfileMode(derived.company) === "prospect" ? "Public-information profile" : "Confirmed profile")}</small>
+      </div>
+      <nav class="nav-list" aria-label="Main">
+        ${CUSTOMER_NAV_ITEMS.map(
+          (item) => `
+            <button class="nav-item ${route === item.id ? "active" : ""}" data-action="route" data-route="${item.id}">
+              <span>${escapeHtml(item.label)}</span>
+            </button>
+          `
+        ).join("")}
+      </nav>
+      ${renderDeveloperTools(route)}
+    </aside>
   `;
 }
 
@@ -1362,176 +1717,81 @@ function renderOpportunityScopeTabs(derived) {
   `;
 }
 
-function renderOpportunityCardPills(item) {
-  const badges = [];
-  const fitBand = fitBandOf(item);
-  if (item.decision?.recommendedAction?.label) {
-    badges.push(
-      pill(actionLabelOf(item.decision.recommendedAction), actionTone(item.decision.recommendedAction.code))
-    );
-  }
-  if (fitBand) {
-    badges.push(pill(fitBandLabelOf(item), recommendationTone(fitBand)));
-  } else {
-    badges.push(pill("Not suitable", "bad"));
-  }
-  badges.push(
-    pill(
-      item.confidenceShield ? CONFIDENCE_COPY[item.confidenceShield.label] : "Confidence pending",
-      confidenceTone(item.confidenceShield?.label)
-    )
-  );
-  return badges.join("");
-}
-
 function customerWhyItMatters(item) {
   const positiveDetail = item?.positives?.find((entry) => entry?.detail)?.detail;
   if (positiveDetail) return positiveDetail;
 
   const candidate = item?.decision?.mainReason ?? item?.executiveVerdict ?? "";
-  if (candidate && !CUSTOMER_WHY_BLOCKLIST.test(candidate)) return candidate;
+  if (candidate && !CUSTOMER_WHY_BLOCKLIST.test(candidate)) {
+    return presentCustomerDecisionText(candidate, { issueTitle: primaryOpenIssue(item)?.title });
+  }
 
   return "Relevant opportunity signals remain limited under the current evidence set.";
 }
 
 function customerNeedsChecking(item) {
-  return (
+  const raw = (
     primaryOpenIssue(item)?.detail ??
     item?.decision?.mainQuestion ??
     item?.decision?.mainReason ??
     "No additional blocking question is currently recorded."
   );
+  return presentCustomerDecisionText(raw, {
+    issueTitle: primaryOpenIssue(item)?.title,
+    verificationFallback: true
+  });
 }
 
 function buildDecisionSummary(match) {
   const primaryIssue = primaryOpenIssue(match);
+  const issueTitle = primaryIssue?.title ?? "";
   return {
     action: actionLabelOf(match.decision?.recommendedAction),
-    reason: match.decision?.mainReason ?? match.executiveVerdict,
-    blocker: match.decision?.mainQuestion ?? primaryIssue?.detail ?? "No blocking question is currently recorded."
+    reason: presentCustomerDecisionText(match.decision?.mainReason ?? match.executiveVerdict, {
+      issueTitle
+    }),
+    blocker: presentCustomerDecisionText(
+      match.decision?.mainQuestion ?? primaryIssue?.detail ?? "No blocking question is currently recorded.",
+      {
+        issueTitle,
+        verificationFallback: true
+      }
+    )
   };
 }
 
-function renderAiReviewSnapshot(aiReview, persistence) {
-  const meta = aiReviewStatusMeta(aiReview);
-  const savedState =
-    aiReview?.status === "current" || aiReview?.status === "stale"
-      ? (persistence?.status === "available" ? "Saved locally" : "Session-only review")
-      : "Not saved yet";
-  return `
-    <div class="ai-review-inline">
-      <span>${escapeHtml(meta.label)}</span>
-      <span>${escapeHtml(savedState)}</span>
-    </div>
-  `;
+function buildDecisionHeaderAlert(match, decision) {
+  const confirmedBlocker = match.blockers?.[0] ?? null;
+  if (confirmedBlocker) {
+    const detail = presentCustomerDecisionText(confirmedBlocker.detail, { issueTitle: confirmedBlocker.title });
+    if (detail && !isDuplicateHighLevelText(detail, [decision.reason, decision.blocker])) {
+      return `Confirmed blocker: ${detail}`;
+    }
+  }
+
+  const potentialBlocker = match.potentialHardBlockers?.[0] ?? null;
+  if (!potentialBlocker) return "";
+
+  const detail = presentCustomerDecisionText(potentialBlocker.detail, {
+    issueTitle: potentialBlocker.title,
+    verificationFallback: true
+  });
+  const alertCopy = detail ? `Potential hard blocker: ${detail}` : "";
+  return isDuplicateHighLevelText(alertCopy, [decision.reason, decision.blocker]) ? "" : alertCopy;
 }
 
-function renderOpportunityPreview(item, { now, aiReview, persistence, showActions = false } = {}) {
-  const organisation =
-    item.opportunity?.contractingAuthority ||
-    item.opportunity?.issuingOrganisation ||
-    item.primaryContact?.name ||
-    "Organisation not stated";
-  const statusMeta = aiReviewStatusMeta(aiReview);
-  const whyItMatters = customerWhyItMatters(item);
-  const needsChecking = customerNeedsChecking(item);
-
-  return `
-    <article
-      class="opportunity-card ${uiState.selectedOpportunityId === item.opportunityId && showActions ? "selected" : ""}"
-      data-action="select"
-      data-id="${item.opportunityId}"
-      tabindex="0"
-      role="button"
-      aria-label="Open analysis for ${escapeHtml(item.displayTitle)}"
-    >
-      <div class="opportunity-header-row">
-        <div class="card-topline">
-          ${renderOpportunityCardPills(item)}
-        </div>
-        <span class="opportunity-type-label">${escapeHtml(OPPORTUNITY_TYPES[item.opportunity?.type] ?? "Opportunity")}</span>
-      </div>
-      <h3>${escapeHtml(item.displayTitle)}</h3>
-      <p class="opportunity-subline">${escapeHtml(organisation)}</p>
-      <div class="opportunity-metrics">
-        <span>${escapeHtml(previewValueLabel(item))}</span>
-        <span>${escapeHtml(item.locationLabel || "Location not stated")}</span>
-        <span>${escapeHtml(urgencyChip(item.opportunity, now))}</span>
-      </div>
-      <div class="opportunity-copy-block">
-        <strong>Why it matters</strong>
-        <p>${escapeHtml(whyItMatters)}</p>
-      </div>
-      <div class="opportunity-copy-block">
-        <strong>Needs checking</strong>
-        <p>${escapeHtml(needsChecking)}</p>
-      </div>
-      <div class="opportunity-footer">
-        <div>
-          ${renderAiReviewSnapshot(aiReview, persistence)}
-          <small>${escapeHtml(statusMeta.detail)}</small>
-        </div>
-        ${
-          showActions
-            ? `<div class="action-row">
-                <button class="ghost-button" data-action="save" data-id="${item.opportunityId}">
-                  ${(persistence?.savedSet?.has?.(item.opportunityId) ? "Unsave" : "Save")}
-                </button>
-                <button class="button-secondary" data-action="select" data-id="${item.opportunityId}">View opportunity</button>
-              </div>`
-            : `<span class="card-affordance">View opportunity</span>`
-        }
-      </div>
-    </article>
-  `;
+function shouldShowFullTitleDisclosure(title) {
+  const value = collapseWhitespace(title);
+  return value.length >= 140 && value.split(" ").length >= 14;
 }
 
-function renderNavigation(route, derived) {
+function renderFullTitleDisclosure(title) {
+  if (!shouldShowFullTitleDisclosure(title)) return "";
   return `
-    <aside class="sidebar">
-      <div class="brand-block">
-        <div class="brand-mark"></div>
-        <div>
-          <p class="eyebrow">Decision-grade public opportunity intelligence</p>
-          <h1>${APP_TITLE}</h1>
-          <p class="brand-copy">Calm, evidence-backed public opportunity decisions for European SMEs.</p>
-        </div>
-      </div>
-      <div class="company-switcher">
-        <label>
-          Active company
-          <select data-control="active-company">
-            ${derived.companies
-              .map(
-                (company) =>
-                  `<option value="${escapeHtml(company.id)}" ${company.id === derived.company.id ? "selected" : ""}>${escapeHtml(company.legalName)}</option>`
-              )
-              .join("")}
-          </select>
-        </label>
-        <small>${escapeHtml(getProfileMode(derived.company) === "prospect" ? "Prospect profile" : "Confirmed company profile")}</small>
-      </div>
-      <nav class="nav-list">
-        ${CUSTOMER_NAV_ITEMS.map(
-          (item) => `
-            <button class="nav-item ${route === item.id ? "active" : ""}" data-action="route" data-route="${item.id}">
-              <span>${escapeHtml(item.label)}</span>
-            </button>
-          `
-        ).join("")}
-      </nav>
-      <div class="nav-divider">Admin</div>
-      <nav class="nav-list nav-list-admin">
-        ${ADMIN_NAV_ITEMS.map(
-          (item) => `
-            <button class="nav-item ${route === item.id ? "active" : ""}" data-action="route" data-route="${item.id}">
-              <span>${escapeHtml(item.label)}</span>
-              <small>Admin</small>
-            </button>
-          `
-        ).join("")}
-      </nav>
-    </aside>
+    <details class="title-disclosure">
+      <summary>Full official title</summary>
+      <p>${escapeHtml(title)}</p>
+    </details>
   `;
 }
 
@@ -1542,30 +1802,7 @@ function renderOverviewGrid(cards = []) {
 }
 
 function renderSearchDepthControls(derived, { compact = false } = {}) {
-  const hidden = Math.max(0, derived.visibleMatchesTotal - derived.funnel.policy.customerSurface);
-  const meta = compact
-    ? `Stored universe ${formatNumber(derived.funnel.sourceUniverseCount)} · analysed ${formatNumber(derived.portfolio.counts.analysed)} · current depth ${formatNumber(derived.funnel.analysisDepth)}`
-    : `Stored universe ${formatNumber(derived.funnel.sourceUniverseCount)} · candidate pool ${formatNumber(derived.funnel.candidatePoolCount)} · analysed ${formatNumber(derived.portfolio.counts.analysed)} · current depth ${formatNumber(derived.funnel.analysisDepth)}`;
-  const surfaceNote = compact
-    ? `Customer pages currently prioritise the strongest ${derived.funnel.policy.customerSurface} analysed results while the full stored source universe remains intact.`
-    : hidden > 0
-      ? `Showing ${formatNumber(derived.visibleMatches.length)} of ${formatNumber(derived.visibleMatchesTotal)} results in this view. Search wider expands the analysed pool; customer pages still surface the strongest ${derived.funnel.policy.customerSurface} by default.`
-      : `Showing ${formatNumber(derived.visibleMatches.length)} result${derived.visibleMatches.length === 1 ? "" : "s"} in this view.`;
-
-  return `
-    <div class="detail-section">
-      <div class="action-row">
-        ${
-          derived.funnel.canSearchWider
-            ? `<button class="button-secondary" data-action="search-wider">Search wider</button>`
-            : `<span class="inline-note">Current search depth is at the local development maximum of ${formatNumber(derived.funnel.policy.maxAnalysis)} fully analysed opportunities.</span>`
-        }
-      </div>
-      <p class="form-help">${escapeHtml("OportuneX prioritised the strongest matches for your company. Search wider to include less obvious possibilities.")}</p>
-      <p class="form-help">${escapeHtml(surfaceNote)}</p>
-      <p class="form-help">${escapeHtml(meta)}</p>
-    </div>
-  `;
+  return renderFindMoreOpportunities(derived, { compact });
 }
 
 function renderFunnelDiagnostics(derived) {
@@ -1623,36 +1860,27 @@ function renderFunnelDiagnostics(derived) {
 }
 
 function renderOverview(derived, persistence) {
-  const top = derived.portfolio.recommended.slice(0, 3);
-  const bestOpportunitiesCard = `
-    <article class="card">
-      <div class="section-heading">
-        <h3>Best opportunities</h3>
-        <p>The highest-priority live opportunities for the active company, with the strongest positive reason and the main verification question surfaced first.</p>
-      </div>
-      <div class="opportunity-list">
-        ${
-          top.length
-            ? top.map((item) => renderOpportunityPreview(item, {
-              now: derived.now,
-              aiReview: derived.aiReviewByOpportunity.get(item.opportunityId),
-              persistence: { savedSet: derived.savedSet, status: persistence?.status }
-            })).join("")
-            : `<p class="empty-state">No opportunity currently stands out for this company. Review the full list or import more opportunities.</p>`
-        }
-      </div>
-      ${renderSearchDepthControls(derived, { compact: true })}
-    </article>
-  `;
+  const count = derived.portfolio.counts.worthAttention;
+  const headline = count === 0
+    ? "No opportunity needs immediate attention"
+    : `${count} opportunit${count === 1 ? "y deserves" : "ies deserve"} your attention`;
+  const lead = count === 0
+    ? `${derived.company.legalName} does not currently have a high-priority opportunity to act on immediately.`
+    : `For ${derived.company.legalName}, these are the public contracts and grants most worth reviewing next.`;
+  const top = (
+    count > 0
+      ? derived.portfolio.buckets.worthAttention
+      : derived.portfolio.buckets.needsVerification
+  ).slice(0, 3);
   const verificationQuestionsCard = derived.questions.length
     ? `
-        <article class="card">
+        <article class="card subdued-card">
           <div class="section-heading">
-            <h3>Important verification questions</h3>
-            <p>The unresolved questions most likely to change a recommendation or reveal a hard stop.</p>
+            <h3>Needs checking next</h3>
+            <p>The main unanswered questions most likely to change a decision.</p>
           </div>
           <div class="question-list">
-            ${derived.questions.map((question) => `
+            ${derived.questions.slice(0, 4).map((question) => `
               <article class="question-card">
                 <strong>${escapeHtml(question.question)}</strong>
                 <small class="question-why">${escapeHtml(question.why ?? "This answer could materially change the decision.")}</small>
@@ -1662,45 +1890,38 @@ function renderOverview(derived, persistence) {
         </article>
       `
     : "";
-  const recentAiReviewsCard = derived.recentAiReviews.length
-    ? `
-        <article class="card">
-          <div class="section-heading">
-            <h3>Recent AI-reviewed opportunities</h3>
-            <p>Saved per-company AI verification memory stays attached to the correct company and opportunity pair.</p>
-          </div>
-          <div class="rejected-list">
-            ${derived.recentAiReviews.map(({ run, item, reviewState }) => `
-              <button class="mini-list-item" data-action="select" data-id="${item.opportunityId}">
-                <strong>${escapeHtml(item.displayTitle)}</strong>
-                <span>${escapeHtml(aiReviewStatusMeta(reviewState).label)} · ${escapeHtml(formatDate(run.completedAt, { includeTime: true }))}</span>
-              </button>
-            `).join("")}
-          </div>
-        </article>
-      `
-    : "";
   return `
     <section class="page-grid">
-      <div class="hero-panel">
+      <article class="hero-panel overview-hero">
         <div>
           <p class="eyebrow">Overview</p>
-          <h2>What should ${escapeHtml(derived.company.tradingName || derived.company.legalName)} pay attention to now?</h2>
-          <p class="lead">
-            OportuneX combines fit analysis, hard-stop eligibility logic, evidence discipline, and optional AI second-pass verification so the next move is clear.
-          </p>
+          <h2>${escapeHtml(headline)}</h2>
+          <p class="lead">${escapeHtml(lead)}</p>
+          <div class="summary-chip-row">
+            ${renderCompanySummaryChip(`${derived.portfolio.counts.needsVerification} need verification`, derived.portfolio.counts.needsVerification ? "warn" : "neutral")}
+            ${renderCompanySummaryChip(`${derived.savedSet.size} saved`, derived.savedSet.size ? "good" : "neutral")}
+          </div>
         </div>
-        <div class="hero-metrics">
-          ${statCard("Active company", derived.company.tradingName || derived.company.legalName, getProfileMode(derived.company) === "prospect" ? "Prospect profile" : "Confirmed profile")}
-          ${statCard("Worth your attention", String(derived.portfolio.counts.worthAttention), "Actionable now")}
-          ${statCard("Needs verification", String(derived.portfolio.counts.needsVerification), "Before spending time or money")}
-          ${statCard("Saved", String(derived.savedSet.size), "Pinned for follow-up")}
-          ${statCard("Analysed", String(derived.portfolio.counts.analysed), "Secondary reference")}
+      </article>
+      <article class="card">
+        <div class="section-heading">
+          <h3>Top opportunities</h3>
+          <p>The strongest current opportunities for the active company.</p>
         </div>
-      </div>
-
-      ${renderOverviewGrid([bestOpportunitiesCard, verificationQuestionsCard])}
-      ${renderOverviewGrid([recentAiReviewsCard])}
+        <div class="opportunity-list">
+          ${
+            top.length
+              ? top.map((item) => renderOpportunityPreview(item, {
+                now: derived.now,
+                aiReview: derived.aiReviewByOpportunity.get(item.opportunityId),
+                persistence: { savedSet: derived.savedSet, status: persistence?.status }
+              })).join("")
+              : `<p class="empty-state">No opportunity needs immediate attention.</p>`
+          }
+        </div>
+        ${renderFindMoreOpportunities(derived, { compact: true })}
+      </article>
+      ${verificationQuestionsCard}
     </section>
   `;
 }
@@ -1748,15 +1969,24 @@ function renderFilters() {
 
 function renderOpportunityList(derived, persistence) {
   const matches = derived.visibleMatches;
+  const hasSelectedOpportunity = Boolean(derived.selectedRaw);
   return `
-    <section class="split-layout">
+    <section class="split-layout ${uiState.detailPanelCollapsed ? "detail-collapsed" : ""}">
       <div class="stack">
         <article class="card">
-          <div class="section-heading">
-            <h2>Opportunities</h2>
-            <p>Scan opportunities by action first, then fit, evidence confidence, value, timing, and the main verification question.</p>
+          <div class="section-heading with-actions">
+            <div>
+              <h2>Opportunities</h2>
+              <p>Public contracts and grants worth considering for your company.</p>
+            </div>
+            ${
+              hasSelectedOpportunity
+                ? uiState.detailPanelCollapsed
+                  ? `<button class="ghost-button" data-action="open-report" aria-expanded="false">Open report</button>`
+                  : `<button class="ghost-button" data-action="collapse-report" aria-expanded="true">Hide report</button>`
+                : ""
+            }
           </div>
-          ${renderSearchDepthControls(derived)}
           ${renderOpportunityScopeTabs(derived)}
           ${renderFilters()}
           <div class="opportunity-list">
@@ -1768,24 +1998,35 @@ function renderOpportunityList(derived, persistence) {
                   persistence: { savedSet: derived.savedSet, status: persistence?.status },
                   showActions: true
                 })).join("")
-                : `<p class="empty-state">No analysed opportunity matches the current scope and filters.</p>`
+                : `<p class="empty-state">No opportunities match these filters.</p>`
             }
           </div>
+          ${renderFindMoreOpportunities(derived)}
         </article>
       </div>
-      ${renderDetailPanel(derived, persistence)}
+      ${uiState.detailPanelCollapsed ? "" : renderDetailPanel(derived, persistence, { collapsible: true })}
     </section>
   `;
 }
 
 function renderSavedPage(derived, persistence) {
+  const hasSelectedOpportunity = Boolean(derived.selectedRaw);
   return `
-    <section class="split-layout">
+    <section class="split-layout ${uiState.detailPanelCollapsed ? "detail-collapsed" : ""}">
       <div class="stack">
         <article class="card">
-          <div class="section-heading">
-            <h2>Saved opportunities</h2>
-            <p>Keep saved opportunities accessible even when they fall outside the default surfaced shortlist or move into a different decision bucket.</p>
+          <div class="section-heading with-actions">
+            <div>
+              <h2>Saved</h2>
+              <p>Opportunities you've chosen to keep close.</p>
+            </div>
+            ${
+              hasSelectedOpportunity
+                ? uiState.detailPanelCollapsed
+                  ? `<button class="ghost-button" data-action="open-report" aria-expanded="false">Open report</button>`
+                  : `<button class="ghost-button" data-action="collapse-report" aria-expanded="true">Hide report</button>`
+                : ""
+            }
           </div>
           <div class="opportunity-list">
             ${
@@ -1796,12 +2037,12 @@ function renderSavedPage(derived, persistence) {
                   persistence: { savedSet: derived.savedSet, status: persistence?.status },
                   showActions: true
                 })).join("")
-                : `<p class="empty-state">No saved opportunity yet. Save an opportunity from the ranked list to keep it here for follow-up.</p>`
+                : `<p class="empty-state">No saved opportunities yet. Save an opportunity to keep it close for follow-up.</p>`
             }
           </div>
         </article>
       </div>
-      ${renderDetailPanel(derived, persistence)}
+      ${uiState.detailPanelCollapsed ? "" : renderDetailPanel(derived, persistence, { collapsible: true })}
     </section>
   `;
 }
@@ -1837,30 +2078,43 @@ function renderCompanyPage(company) {
   const employeeStatus = getFactStatus(employeeFact);
   const employeeUsesCurrentLabel = employeeValue != null && employeeStatus === "company_confirmed";
   const turnoverValue = turnoverRange.min != null || turnoverRange.max != null ? formatCompanyRange(turnoverRange, "money") : "Unknown";
+  const companyLocation = [company.geography.municipality, company.geography.province, company.geography.autonomousCommunity]
+    .filter(Boolean)
+    .join(", ") || "Location not yet confirmed";
   return `
     <section class="page-grid">
-      <div class="card-grid three">
-        ${statCard("Decision profile completeness", `${completeness.score}%`, completeness.missingFacts[0] ?? "Prospect-safe profile view")}
-        ${statCard("Company sources", String(sources.length), profileMode === "prospect" ? "Public evidence preserved" : "Confirmed company profile")}
-        ${statCard("Visible gaps", String(unknowns.length + conflicts.length), unknowns[0] ?? conflicts[0]?.field ?? "No major gap")}
-      </div>
-      ${
-        profileMode === "prospect"
-          ? `
-              <article class="card">
-                <div class="section-heading">
-                  <h2>Prospect profile</h2>
-                  <p>This company profile was assembled from public information and still needs business confirmation on the most important unknowns.</p>
-                </div>
-              </article>
-            `
-          : ""
-      }
+      <article class="hero-panel company-hero">
+        <div>
+          <p class="eyebrow">Company</p>
+          <h2>${escapeHtml(company.tradingName || company.legalName)}</h2>
+          <p class="lead">${escapeHtml(companyLocation)}</p>
+          <div class="summary-chip-row">
+            ${renderCompanySummaryChip(profileMode === "prospect" ? "Public-information profile" : "Confirmed profile", profileMode === "prospect" ? "warn" : "good")}
+            ${renderCompanySummaryChip(`${completeness.score}% profile completeness`, completeness.score >= 80 ? "good" : "warn")}
+            ${renderCompanySummaryChip(`${unknowns.length + conflicts.length} items need confirmation`, unknowns.length + conflicts.length ? "warn" : "neutral")}
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="section-heading">
+          <h3>What OportuneX understands about your company</h3>
+          <p>Capabilities and operating context are shown first. Provenance remains available without overwhelming the page.</p>
+        </div>
+        <div class="capability-chip-row">
+          ${
+            capabilities.length
+              ? capabilities.map((item) => renderCompanySummaryChip(item.label, item.status === "company_confirmed" ? "good" : "neutral")).join("")
+              : renderCompanySummaryChip("Capabilities need confirmation", "warn")
+          }
+        </div>
+      </article>
+
       <div class="card-grid two">
         <article class="card">
           <div class="section-heading">
-            <h2>Identity</h2>
-            <p>Separate legal identity, public classifications, and commercial capabilities.</p>
+            <h3>Business information</h3>
+            <p>The company facts that most often shape opportunity fit and scale.</p>
           </div>
           <div class="profile-grid">
             ${renderProfileDatum({
@@ -1874,13 +2128,174 @@ function renderCompanyPage(company) {
               status: profileMode === "confirmed" ? "company_confirmed" : "public_reported"
             })}
             ${renderProfileDatum({
-              label: "Operating geography",
-              value: [company.geography.municipality, company.geography.province, company.geography.autonomousCommunity].filter(Boolean).join(", ") || "Unknown",
-              status: profileMode === "confirmed" ? "company_confirmed" : "public_reported"
+              label: employeeUsesCurrentLabel ? "Current employees" : "Reported employees",
+              value: employeeValue != null ? formatCompanyFact(employeeFact) : formatCompanyRange(employeeRange),
+              status: employeeValue != null ? getFactStatus(employeeFact) : getFactStatus(employeeRange),
+              meta: employeeValue != null ? formatFactMeta(employeeFact) : formatRangeMeta(employeeRange),
+              note:
+                employeeUsesCurrentLabel
+                  ? ""
+                  : employeeValue != null
+                    ? "A public or historical employee figure does not prove the current headcount."
+                    : getFactStatus(employeeRange) === "public_reported"
+                      ? "Current headcount is not yet company-confirmed."
+                      : "",
+              stale: employeeValue == null ? isStalePublicFact(employeeRange) : isStalePublicFact(employeeFact)
+            })}
+            ${renderProfileDatum({
+              label: "Reported turnover",
+              value: turnoverValue,
+              status: getFactStatus(turnoverRange),
+              meta: formatRangeMeta(turnoverRange),
+              stale: isStalePublicFact(turnoverRange)
+            })}
+            ${renderProfileDatum({
+              label: "Minimum attractive project value",
+              value: formatCompanyFact(minProjectFact, "money"),
+              status: getFactStatus(minProjectFact),
+              meta: formatFactMeta(minProjectFact),
+              stale: isStalePublicFact(minProjectFact)
+            })}
+            ${renderProfileDatum({
+              label: "Ideal project value",
+              value: formatCompanyFact(idealProjectFact, "money"),
+              status: getFactStatus(idealProjectFact),
+              meta: formatFactMeta(idealProjectFact),
+              stale: isStalePublicFact(idealProjectFact)
+            })}
+            ${renderProfileDatum({
+              label: "Maximum realistic project value",
+              value: formatCompanyFact(maxRealisticFact, "money"),
+              status: getFactStatus(maxRealisticFact),
+              meta: formatFactMeta(maxRealisticFact),
+              stale: isStalePublicFact(maxRealisticFact)
             })}
           </div>
-          <div class="detail-section">
-            <h4>Classification codes</h4>
+        </article>
+
+        <article class="card">
+          <div class="section-heading">
+            <h3>Operating area</h3>
+            <p>Where the company works and what kinds of opportunities it prefers to pursue.</p>
+          </div>
+          <div class="profile-grid">
+            ${renderProfileDatum({
+              label: "Operating geography",
+              value: companyLocation,
+              status: profileMode === "confirmed" ? "company_confirmed" : "public_reported"
+            })}
+            ${renderProfileDatum({
+              label: "Preferred radius",
+              value: getFactValue(radiusFact) != null ? `${formatCompanyFact(radiusFact)} km` : "Unknown",
+              status: getFactStatus(radiusFact),
+              meta: formatFactMeta(radiusFact),
+              stale: isStalePublicFact(radiusFact)
+            })}
+            ${renderProfileDatum({
+              label: "Desired work types",
+              value: company.preferences.desiredWorkTypes.join(", ") || "Unknown",
+              status: company.preferences.desiredWorkTypes.length ? "company_confirmed" : "unknown"
+            })}
+            ${renderProfileDatum({
+              label: "Unwanted work types",
+              value: company.preferences.unwantedWorkTypes.join(", ") || "Unknown",
+              status: company.preferences.unwantedWorkTypes.length ? "company_confirmed" : "unknown"
+            })}
+          </div>
+        </article>
+      </div>
+
+      <div class="card-grid two">
+        <article class="card">
+          <div class="section-heading">
+            <h3>Capabilities</h3>
+            <p>Services and delivery areas that OportuneX can currently use in matching.</p>
+          </div>
+          <div class="profile-grid">
+            ${confirmedCapabilities.length ? confirmedCapabilities.map(renderCapabilitySummary).join("") : ""}
+            ${publicCapabilities.length ? publicCapabilities.map(renderCapabilitySummary).join("") : ""}
+            ${!capabilities.length ? renderProfileDatum({ label: "Capabilities", value: "Unknown", status: "unknown" }) : ""}
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-heading">
+            <h3>Experience & qualifications</h3>
+            <p>Capability, public procurement experience, certifications and insurance stay separate from one another.</p>
+          </div>
+          <div class="profile-grid">
+            ${renderProfileDatum({
+              label: "Observed similar-project value",
+              value: formatCompanyFact(maxProjectFact, "money"),
+              status: getFactStatus(maxProjectFact),
+              meta: formatFactMeta(maxProjectFact),
+              stale: isStalePublicFact(maxProjectFact)
+            })}
+            ${renderProfileDatum({
+              label: "Public procurement experience",
+              value: formatCompanyFact(procurementExperienceFact),
+              status: getFactStatus(procurementExperienceFact),
+              meta: formatFactMeta(procurementExperienceFact),
+              stale: isStalePublicFact(procurementExperienceFact)
+            })}
+            ${certifications.length
+              ? certifications
+                  .map((item) =>
+                    renderProfileDatum({
+                      label: item.name,
+                      value: formatCompanyFact(item.currentStatus),
+                      status: getFactStatus(item.currentStatus),
+                      meta: formatFactMeta(item.currentStatus),
+                      stale: isStalePublicFact(item.currentStatus)
+                    })
+                  )
+                  .join("")
+              : renderProfileDatum({ label: "Certifications", value: "Unknown", status: "unknown" })}
+            ${insurancePolicies.length
+              ? insurancePolicies
+                  .map((item) =>
+                    renderProfileDatum({
+                      label: `${item.name} cover`,
+                      value: formatCompanyFact(item.coverAmountFact, "money"),
+                      status: getFactStatus(item.coverAmountFact),
+                      meta: formatFactMeta(item.coverAmountFact),
+                      stale: isStalePublicFact(item.coverAmountFact)
+                    })
+                  )
+                  .join("")
+              : renderProfileDatum({ label: "Insurance", value: "Unknown", status: "unknown", note: "Insurance evidence remains separate from capability evidence." })}
+            ${renderProfileDatum({
+              label: "Can co-finance grants?",
+              value: formatCompanyFact(canCoFinanceFact, "boolean"),
+              status: getFactStatus(canCoFinanceFact),
+              meta: formatFactMeta(canCoFinanceFact),
+              stale: isStalePublicFact(canCoFinanceFact)
+            })}
+          </div>
+        </article>
+      </div>
+
+      ${
+        profileMode === "prospect" || unknowns.length || conflicts.length
+          ? `
+              <article class="card subdued-card">
+                <div class="section-heading">
+                  <h3>${profileMode === "prospect" ? "Needs confirmation" : "Information still needed"}</h3>
+                  <p>These are the main gaps that can still change opportunity decisions.</p>
+                </div>
+                <ul class="tight-list">
+                  ${unknowns.length ? unknowns.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : `<li>No major unknown recorded.</li>`}
+                  ${conflicts.length ? conflicts.map((item) => `<li>${escapeHtml(item.field)} — ${escapeHtml(item.detail)}</li>`).join("") : ""}
+                </ul>
+              </article>
+            `
+          : ""
+      }
+
+      ${renderDetailDisclosure(
+        "More company details",
+        `
+          <div class="stack">
             <div class="profile-grid">
               ${
                 cnae.length
@@ -1931,222 +2346,59 @@ function renderCompanyPage(company) {
                   : ""
               }
             </div>
-          </div>
-        </article>
-        <article class="card">
-          <div class="section-heading">
-            <h2>Business scale</h2>
-            <p>Historical public values stay historical. Unknown never becomes zero or a fictional midpoint.</p>
-          </div>
-          <div class="profile-grid">
-            ${renderProfileDatum({
-              label: employeeUsesCurrentLabel ? "Current employees" : "Reported employees",
-              value: employeeValue != null ? formatCompanyFact(employeeFact) : formatCompanyRange(employeeRange),
-              status: employeeValue != null ? getFactStatus(employeeFact) : getFactStatus(employeeRange),
-              meta: employeeValue != null ? formatFactMeta(employeeFact) : formatRangeMeta(employeeRange),
-              note:
-                employeeUsesCurrentLabel
-                  ? ""
-                  : employeeValue != null
-                    ? "A public or historical employee figure does not prove the current headcount."
-                    : getFactStatus(employeeRange) === "public_reported"
-                      ? "Current headcount is not yet company-confirmed."
-                      : "",
-              stale: employeeValue == null ? isStalePublicFact(employeeRange) : isStalePublicFact(employeeFact)
-            })}
-            ${renderProfileDatum({
-              label: "Reported turnover",
-              value: turnoverValue,
-              status: getFactStatus(turnoverRange),
-              meta: formatRangeMeta(turnoverRange),
-              stale: isStalePublicFact(turnoverRange)
-            })}
-            ${renderProfileDatum({
-              label: "Maximum realistic project capacity",
-              value: formatCompanyFact(maxRealisticFact, "money"),
-              status: getFactStatus(maxRealisticFact),
-              meta: formatFactMeta(maxRealisticFact),
-              stale: isStalePublicFact(maxRealisticFact)
-            })}
-            ${renderProfileDatum({
-              label: "Observed similar-project value",
-              value: formatCompanyFact(maxProjectFact, "money"),
-              status: getFactStatus(maxProjectFact),
-              meta: formatFactMeta(maxProjectFact),
-              stale: isStalePublicFact(maxProjectFact)
-            })}
-            ${renderProfileDatum({
-              label: "Public procurement experience",
-              value: formatCompanyFact(procurementExperienceFact),
-              status: getFactStatus(procurementExperienceFact),
-              meta: formatFactMeta(procurementExperienceFact),
-              stale: isStalePublicFact(procurementExperienceFact)
-            })}
-          </div>
-          ${
-            employeeHistory.length || turnoverHistory.length
-              ? `
-                  <div class="detail-section">
-                    <h4>Provenance history</h4>
-                    <ul class="tight-list">
-                      ${employeeHistory
+            ${
+              employeeHistory.length || turnoverHistory.length
+                ? `
+                    <div class="detail-section">
+                      <h4>History</h4>
+                      <ul class="tight-list">
+                        ${employeeHistory
+                          .map(
+                            (item) =>
+                              `<li>Employees history: ${escapeHtml(formatCompanyFact(item))} · ${escapeHtml(describeStatus(getFactStatus(item)))}${item.referenceYear ? ` · ${escapeHtml(String(item.referenceYear))}` : ""}</li>`
+                          )
+                          .join("")}
+                        ${turnoverHistory
+                          .map(
+                            (item) =>
+                              `<li>Turnover history: ${escapeHtml(formatCompanyRange(item, "money"))} · ${escapeHtml(describeStatus(getFactStatus(item)))}${item.referenceYear ? ` · ${escapeHtml(String(item.referenceYear))}` : ""}</li>`
+                          )
+                          .join("")}
+                      </ul>
+                    </div>
+                  `
+                : ""
+            }
+            <div class="detail-section">
+              <h4>Company sources</h4>
+              <div class="source-grid">
+                ${
+                  sources.length
+                    ? sources
                         .map(
-                          (item) =>
-                            `<li>Employees history: ${escapeHtml(formatCompanyFact(item))} · ${escapeHtml(describeStatus(getFactStatus(item)))}${item.referenceYear ? ` · ${escapeHtml(String(item.referenceYear))}` : ""}</li>`
+                          (source) => `
+                            <article class="source-card">
+                              <div class="card-topline">
+                                ${pill(source.sourceType, "neutral")}
+                              </div>
+                              <strong>${escapeHtml(source.organisation)}</strong>
+                              <p>${escapeHtml(source.title)}</p>
+                              <small>${source.publishedAt ? `Published ${escapeHtml(source.publishedAt)}` : "Published date unknown"}${source.retrievedAt ? ` · Retrieved ${escapeHtml(formatLastChecked(source.retrievedAt))}` : ""}</small>
+                            </article>
+                          `
                         )
-                        .join("")}
-                      ${turnoverHistory
-                        .map(
-                          (item) =>
-                            `<li>Turnover history: ${escapeHtml(formatCompanyRange(item, "money"))} · ${escapeHtml(describeStatus(getFactStatus(item)))}${item.referenceYear ? ` · ${escapeHtml(String(item.referenceYear))}` : ""}</li>`
-                        )
-                        .join("")}
-                    </ul>
-                  </div>
-                `
-              : ""
-          }
-        </article>
-      </div>
-      <div class="card-grid two">
-        <article class="card">
-          <div class="section-heading">
-            <h2>Capabilities</h2>
-            <p>Public website services can strongly support capability fit without proving legal eligibility.</p>
-          </div>
-          <div class="profile-grid">
-            ${confirmedCapabilities.length ? confirmedCapabilities.map(renderCapabilitySummary).join("") : ""}
-            ${publicCapabilities.length ? publicCapabilities.map(renderCapabilitySummary).join("") : ""}
-            ${!capabilities.length ? renderProfileDatum({ label: "Capabilities", value: "Unknown", status: "unknown" }) : ""}
-          </div>
-        </article>
-        <article class="card">
-          <div class="section-heading">
-            <h2>Qualifications & preferences</h2>
-            <p>Current qualifications remain separate from website services and classification codes.</p>
-          </div>
-          <div class="profile-grid">
-            ${certifications.length
-              ? certifications
-                  .map((item) =>
-                    renderProfileDatum({
-                      label: item.name,
-                      value: formatCompanyFact(item.currentStatus),
-                      status: getFactStatus(item.currentStatus),
-                      meta: formatFactMeta(item.currentStatus),
-                      stale: isStalePublicFact(item.currentStatus)
-                    })
-                  )
-                  .join("")
-              : renderProfileDatum({ label: "Certifications", value: "Unknown", status: "unknown" })}
-            ${insurancePolicies.length
-              ? insurancePolicies
-                  .map((item) =>
-                    renderProfileDatum({
-                      label: `${item.name} cover`,
-                      value: formatCompanyFact(item.coverAmountFact, "money"),
-                      status: getFactStatus(item.coverAmountFact),
-                      meta: formatFactMeta(item.coverAmountFact),
-                      stale: isStalePublicFact(item.coverAmountFact)
-                    })
-                  )
-                  .join("")
-              : renderProfileDatum({ label: "Insurance", value: "Unknown", status: "unknown", note: "Insurance evidence remains separate from capability evidence." })}
-            ${renderProfileDatum({
-              label: "Preferred radius",
-              value: getFactValue(radiusFact) != null ? `${formatCompanyFact(radiusFact)} km` : "Unknown",
-              status: getFactStatus(radiusFact),
-              meta: formatFactMeta(radiusFact),
-              stale: isStalePublicFact(radiusFact)
-            })}
-            ${renderProfileDatum({
-              label: "Minimum attractive project value",
-              value: formatCompanyFact(minProjectFact, "money"),
-              status: getFactStatus(minProjectFact),
-              meta: formatFactMeta(minProjectFact),
-              stale: isStalePublicFact(minProjectFact)
-            })}
-            ${renderProfileDatum({
-              label: "Ideal project value",
-              value: formatCompanyFact(idealProjectFact, "money"),
-              status: getFactStatus(idealProjectFact),
-              meta: formatFactMeta(idealProjectFact),
-              stale: isStalePublicFact(idealProjectFact)
-            })}
-            ${renderProfileDatum({
-              label: "Can co-finance grants?",
-              value: formatCompanyFact(canCoFinanceFact, "boolean"),
-              status: getFactStatus(canCoFinanceFact),
-              meta: formatFactMeta(canCoFinanceFact),
-              stale: isStalePublicFact(canCoFinanceFact)
-            })}
-          </div>
-          <div class="detail-section">
-            <h4>Strategic preferences</h4>
-            <ul class="tight-list">
-              <li>Desired work types: ${escapeHtml(company.preferences.desiredWorkTypes.join(", ") || "Unknown")}</li>
-              <li>Unwanted work types: ${escapeHtml(company.preferences.unwantedWorkTypes.join(", ") || "Unknown")}</li>
-            </ul>
-          </div>
-        </article>
-      </div>
-      ${
-        profileMode === "prospect" || unknowns.length || conflicts.length
-          ? `
-              <div class="card-grid two">
-                <article class="card">
-                  <div class="section-heading">
-                    <h2>${profileMode === "prospect" ? "Unknown information" : "Information still needed"}</h2>
-                    <p>These missing facts matter most for reliable opportunity decisions and should be answered explicitly rather than inferred.</p>
-                  </div>
-                  <ul class="tight-list">
-                    ${unknowns.length ? unknowns.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : `<li>No major unknown recorded.</li>`}
-                  </ul>
-                </article>
-                <article class="card">
-                  <div class="section-heading">
-                    <h2>Source conflicts</h2>
-                    <p>Conflicts remain visible until the company confirms the current fact set.</p>
-                  </div>
-                  <ul class="tight-list">
-                    ${conflicts.length ? conflicts.map((item) => `<li>${escapeHtml(item.field)} — ${escapeHtml(item.detail)}</li>`).join("") : `<li>No source conflict recorded.</li>`}
-                  </ul>
-                </article>
+                        .join("")
+                    : `<p class="empty-state">No company source has been recorded yet.</p>`
+                }
               </div>
-            `
-          : ""
-      }
-      <article class="card">
-        <div class="section-heading">
-          <h2>Company sources</h2>
-          <p>Source traceability is preserved separately from opportunity evidence.</p>
-        </div>
-        <div class="source-grid">
-          ${
-            sources.length
-              ? sources
-                  .map(
-                    (source) => `
-                      <article class="source-card">
-                        <div class="card-topline">
-                          ${pill(source.sourceType, "neutral")}
-                        </div>
-                        <strong>${escapeHtml(source.organisation)}</strong>
-                        <p>${escapeHtml(source.title)}</p>
-                        <small>${source.publishedAt ? `Published ${escapeHtml(source.publishedAt)}` : "Published date unknown"}${source.retrievedAt ? ` · Retrieved ${escapeHtml(formatLastChecked(source.retrievedAt))}` : ""}</small>
-                      </article>
-                    `
-                  )
-                  .join("")
-              : `<p class="empty-state">No company source has been recorded yet.</p>`
-          }
-        </div>
-      </article>
-      <article class="card">
-        <div class="section-heading">
-          <h2>Company Profile</h2>
-          <p>Blank current-value fields are stored as unknown. Saving here creates company-confirmed facts without erasing prior public provenance.</p>
-        </div>
+            </div>
+          </div>
+        `
+      )}
+
+      ${renderDetailDisclosure(
+        "Edit company profile",
+        `
         <form data-form="company" class="form-grid">
           <label>
             Profile mode
@@ -2245,7 +2497,8 @@ function renderCompanyPage(company) {
             <button class="button-primary" type="submit">Save company profile</button>
           </div>
         </form>
-      </article>
+        `
+      )}
     </section>
   `;
 }
@@ -2965,7 +3218,9 @@ function renderAiReviewSection(opportunity, match, aiReview, persistence, compan
   `;
 }
 
-function renderDetailPanel(derived, persistence, showDebugger = false) {
+function renderDetailPanel(derived, persistence, options = {}) {
+  const showDebugger = typeof options === "boolean" ? options : Boolean(options?.showDebugger);
+  const collapsible = typeof options === "object" ? Boolean(options?.collapsible) : false;
   const selected = derived.selectedRecommended ?? derived.selectedRejected?.bestMatch ?? null;
   const raw = derived.selectedRaw;
   if (!selected || !raw) {
@@ -2983,59 +3238,60 @@ function renderDetailPanel(derived, persistence, showDebugger = false) {
         </aside>
       `;
     }
-    return `<aside class="detail-panel"><article class="card"><p class="empty-state">Select an opportunity to inspect its evidence, scoring and professional report.</p></article></aside>`;
+    return `<aside class="detail-panel"><article class="card"><p class="empty-state">Select an opportunity to view its assessment.</p></article></aside>`;
   }
 
   const decision = buildDecisionSummary(selected);
-  const primaryPotentialHardBlocker = selected.potentialHardBlockers?.[0] ?? null;
+  const headerAlert = buildDecisionHeaderAlert(selected, decision);
   const tabs = showDebugger ? ["report", "evidence", "debug"] : ["report", "evidence"];
   const authorityLabel =
     raw.contractingAuthority ||
     raw.issuingOrganisation ||
     selected.primaryContact?.name ||
     "Authority / programme not stated";
+  const valueHeading =
+    raw.type === "grant" && selected.financialPicture?.primaryLine?.id === "programme_budget"
+      ? "Programme budget"
+      : "Published opportunity value";
 
   return `
     <aside class="detail-panel">
-      <article class="card">
-        <div class="detail-summary-card">
-          <div class="card-topline">
-            ${pill(actionLabelOf(selected.decision?.recommendedAction), actionTone(selected.decision?.recommendedAction?.code))}
-            ${pill(fitBandLabelOf(selected), recommendationTone(fitBandOf(selected)))}
-            ${pill(ELIGIBILITY_COPY[selected.eligibilityStatus], eligibilityTone(selected.eligibilityStatus))}
-            ${pill(`Source confidence ${selected.confidenceShield.dataConfidence}`, confidenceTone(selected.confidenceShield.label))}
+      <article class="card detail-report-card">
+        <div class="detail-shell-header">
+          <div>
+            <p class="eyebrow">Opportunity report</p>
+            <h3 class="detail-report-title">${escapeHtml(selected.displayTitle)}</h3>
+            <p class="detail-report-subline">${escapeHtml(authorityLabel)} · ${escapeHtml(OPPORTUNITY_TYPES[raw.type] ?? "Opportunity")}</p>
+            ${renderFullTitleDisclosure(selected.displayTitle)}
           </div>
-          <h3>${escapeHtml(selected.displayTitle)}</h3>
-          <p>${escapeHtml(authorityLabel)} · ${escapeHtml(OPPORTUNITY_TYPES[raw.type] ?? "Opportunity")}</p>
-          <div class="detail-key-facts">
-            ${statCard(
-              raw.type === "grant" && selected.financialPicture?.primaryLine?.id === "programme_budget"
-                ? "Programme budget"
-                : "Published value",
-              selected.displayValueLabel
-            )}
-            ${statCard("Location", selected.locationLabel || "Not stated")}
-            ${statCard("Deadline", formatDeadline(raw.deadline))}
-            ${statCard("Decision confidence", CONFIDENCE_COPY[selected.confidenceShield.label])}
-          </div>
+          ${
+            collapsible
+              ? `<button class="ghost-button" data-action="collapse-report" aria-expanded="true">Hide report</button>`
+              : ""
+          }
         </div>
-        <div class="decision-strip">
-          <div class="decision-item">
-            <span>Recommended action</span>
-            <strong>${escapeHtml(decision.action)}</strong>
+        <div class="decision-hero">
+          <div class="decision-hero-main">
+            <span class="decision-kicker">Recommended action</span>
+            <div class="decision-action-row">
+              ${pill(actionLabelOf(selected.decision?.recommendedAction), actionTone(selected.decision?.recommendedAction?.code))}
+              <span class="decision-fit-line">${escapeHtml(`${fitBandLabelOf(selected)} · ${selected.matchScore ?? selected.priorityScore ?? 0}% match`)}</span>
+            </div>
+            <p class="decision-reason">${escapeHtml(decision.reason)}</p>
           </div>
-          <div class="decision-item">
-            <span>Main reason</span>
-            <p>${escapeHtml(decision.reason)}</p>
-          </div>
-          <div class="decision-item">
-            <span>Main blocker/question</span>
+          <div class="decision-before">
+            <span>Before proceeding</span>
             <p>${escapeHtml(decision.blocker)}</p>
           </div>
+          ${headerAlert ? `<div class="detail-alert">${escapeHtml(headerAlert)}</div>` : ""}
+          <div class="detail-key-facts">
+            ${statCard(valueHeading, selected.displayValueLabel)}
+            ${statCard("Deadline", formatDeadline(raw.deadline))}
+            ${statCard("Buyer / issuer", authorityLabel)}
+            ${statCard("Location", selected.locationLabel || "Not stated")}
+          </div>
         </div>
-        <p>${escapeHtml(selected.executiveVerdict)}</p>
-        ${selected.decision?.recommendedAction?.code === "DO_NOT_PURSUE" ? `<div class="detail-alert"><strong>Current outcome:</strong> ${escapeHtml(selected.decision.mainReason)}</div>` : ""}
-        ${primaryPotentialHardBlocker ? `<div class="detail-alert"><strong>Potential hard blocker:</strong> ${escapeHtml(primaryPotentialHardBlocker.title)}. ${escapeHtml(primaryPotentialHardBlocker.detail)}</div>` : ""}
+        ${renderAiVerificationHero(raw, selected, derived.selectedAiReview, persistence, derived.company.id, showDebugger)}
         <div class="tab-row">
           ${tabs
             .map(
@@ -3049,7 +3305,7 @@ function renderDetailPanel(derived, persistence, showDebugger = false) {
         </div>
         ${
           uiState.detailTab === "report"
-            ? renderReportTab(raw, selected, derived.selectedAiReview, persistence, derived.company.id, showDebugger)
+            ? renderReportTab(raw, selected)
             : uiState.detailTab === "evidence"
               ? renderEvidenceTab(raw, selected)
               : renderDebugTab(raw, selected, derived.selectedAiReview, derived.funnel.byOpportunityId?.[selected.opportunityId] ?? null)
@@ -3059,7 +3315,7 @@ function renderDetailPanel(derived, persistence, showDebugger = false) {
   `;
 }
 
-function renderReportTab(opportunity, match, aiReview, persistence, companyId, showDebugger = false) {
+function renderReportTab(opportunity, match) {
   const eligibilityRequirements = match.requirementRows.filter((row) => row.mandatory).map((row) => row.label);
   const nonActionable = isNonActionableDerivedStatus(opportunity.derivedStatus ?? opportunity.status);
   const preparationItems = nonActionable
@@ -3076,19 +3332,20 @@ function renderReportTab(opportunity, match, aiReview, persistence, companyId, s
   });
 
   return `
-    <div class="detail-section">
-      <h4>Why this matters</h4>
-      <ul class="tight-list">
+    ${renderDetailDisclosure(
+      "Why this matches",
+      `<ul class="tight-list">
         ${
           match.positives.length
             ? match.positives.slice(0, 4).map((item) => `<li><strong>${escapeHtml(item.title)}:</strong> ${escapeHtml(item.detail)}</li>`).join("")
             : `<li>${escapeHtml(match.executiveVerdict)}</li>`
         }
-      </ul>
-    </div>
-    <div class="detail-section">
-      <h4>Before you act</h4>
-      <ul class="tight-list">
+      </ul>`,
+      { open: true }
+    )}
+    ${renderDetailDisclosure(
+      "Eligibility & blockers",
+      `<ul class="tight-list">
         ${primaryOpenIssue(match) ? `<li><strong>Next verification question:</strong> ${escapeHtml(primaryOpenIssue(match).detail)}</li>` : ""}
         ${
           (match.potentialHardBlockers ?? []).length
@@ -3100,9 +3357,6 @@ function renderReportTab(opportunity, match, aiReview, persistence, companyId, s
         ${match.blockers.length ? match.blockers.map((item) => `<li><strong>Confirmed blocker:</strong> ${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("") : ""}
         ${match.unknowns.map((item) => `<li><strong>Important unknown:</strong> ${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
       </ul>
-    </div>
-    <div class="detail-section">
-      <h4>Eligibility</h4>
       <div class="table-scroll">
         <table>
           <thead>
@@ -3134,11 +3388,12 @@ function renderReportTab(opportunity, match, aiReview, persistence, companyId, s
             }
           </tbody>
         </table>
-      </div>
-    </div>
-    <div class="detail-section">
-      <h4>Financial picture</h4>
-      <ul class="tight-list">
+      </div>`,
+      { open: true }
+    )}
+    ${renderDetailDisclosure(
+      "Financial picture",
+      `<ul class="tight-list">
         ${(match.financialPicture?.lines ?? []).length
           ? (match.financialPicture?.lines ?? [])
               .map(
@@ -3148,61 +3403,24 @@ function renderReportTab(opportunity, match, aiReview, persistence, companyId, s
               .join("")
           : "<li>No reliable financial amount is currently available.</li>"}
         <li>${escapeHtml(match.companyAmountLabel)}</li>
-        <li>Recommended action: ${escapeHtml(actionLabelOf(match.decision?.recommendedAction))}</li>
-        <li>Duration: ${escapeHtml(opportunity.duration ?? "Not stated")}</li>
-        <li>Guarantees: ${escapeHtml(guaranteeLabel)}</li>
         <li>Scale fit note: ${escapeHtml(match.dimensions?.scaleAssessment?.note ?? "No scale note recorded.")}</li>
-      </ul>
-    </div>
-    <div class="detail-section">
-      <h4>Eligibility / qualification requirements</h4>
-      <ul class="tight-list">
-        ${eligibilityRequirements.length
-          ? eligibilityRequirements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
-          : match.eligibilityStatus === "ELIGIBILITY_NOT_ASSESSED"
-            ? "<li>Qualification requirements have not yet been retrieved from the reviewed sources.</li>"
-            : "<li>None published.</li>"}
-      </ul>
-    </div>
-    <div class="detail-section">
-      <h4>Submission documents</h4>
-      <ul class="tight-list">
-        ${(opportunity.requiredDocuments ?? []).length
-          ? (opportunity.requiredDocuments ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")
-          : "<li>No submission document has been explicitly listed by the source.</li>"}
-      </ul>
-    </div>
-    <div class="detail-section">
-      <h4>Preparation items</h4>
-      <ul class="tight-list">
-        ${preparationItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-      </ul>
-    </div>
-    <div class="detail-section">
-      <h4>Source / evidence</h4>
-      <ul class="tight-list">
-        <li>Official source verified: ${match.confidenceShield.officialSourceVerified ? "Yes" : "No"}</li>
-        <li>Last checked: ${escapeHtml(formatLastChecked(opportunity.lastChecked))}</li>
-        <li>Decision confidence: ${escapeHtml(CONFIDENCE_COPY[match.confidenceShield.label])}</li>
-        <li>Critical field summary: ${escapeHtml(match.confidenceShield.criticalFieldSummary)}</li>
-        ${match.risks.map((item) => `<li>${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
-      </ul>
-    </div>
-    ${renderAiReviewSection(opportunity, match, aiReview, persistence, companyId, showDebugger)}
-    <div class="detail-section">
-      <h4>How to pursue</h4>
-      <ul class="tight-list">
+      </ul>`
+    )}
+    ${renderDetailDisclosure(
+      "Deadline & submission",
+      `<ul class="tight-list">
+        <li>Deadline: ${escapeHtml(formatDeadline(opportunity.deadline))}</li>
         ${
           nonActionable
             ? `<li>No live submission route applies because this notice is not open.</li>`
             : opportunity.applicationUrl
-            ? `<li><a href="${escapeHtml(opportunity.applicationUrl)}" target="_blank" rel="noreferrer noopener">Open official application</a></li>`
-            : `<li>Submission route not yet verified</li>`
+              ? `<li><a href="${escapeHtml(opportunity.applicationUrl)}" target="_blank" rel="noreferrer noopener">Open official application</a></li>`
+              : `<li>Submission route not yet verified.</li>`
         }
         ${
           opportunity.noticeUrl
             ? `<li><a href="${escapeHtml(opportunity.noticeUrl)}" target="_blank" rel="noreferrer noopener">Open official notice</a></li>`
-            : `<li>Official notice / dossier not yet verified</li>`
+            : `<li>Official notice / dossier not yet verified.</li>`
         }
         <li>Authority contact: ${escapeHtml(
           nonActionable && !match.primaryContact?.name
@@ -3210,12 +3428,50 @@ function renderReportTab(opportunity, match, aiReview, persistence, companyId, s
             : match.primaryContact?.name ?? "Contact not found in reviewed/imported sources"
         )}</li>
         <li>Reference: ${escapeHtml(opportunity.referenceNumber ?? opportunity.id)}</li>
-        <li>Deadline: ${escapeHtml(formatDeadline(opportunity.deadline))}</li>
+      </ul>`
+    )}
+    ${renderDetailDisclosure(
+      "Requirements",
+      `<ul class="tight-list">
+        ${eligibilityRequirements.length
+          ? eligibilityRequirements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+          : match.eligibilityStatus === "ELIGIBILITY_NOT_ASSESSED"
+            ? "<li>Qualification requirements have not yet been retrieved from the reviewed sources.</li>"
+            : "<li>None published.</li>"}
+      </ul>
+      <ul class="tight-list">
+        ${(opportunity.requiredDocuments ?? []).length
+          ? (opportunity.requiredDocuments ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+          : "<li>No submission document has been explicitly listed by the source.</li>"}
+      </ul>`
+    )}
+    ${renderDetailDisclosure(
+      "Evidence & confidence",
+      `<ul class="tight-list">
+        <li>Decision confidence: ${escapeHtml(CONFIDENCE_COPY[match.confidenceShield.label])}</li>
+        <li>Source confidence: ${escapeHtml(match.confidenceShield.dataConfidence)}</li>
+        <li>Eligibility confidence: ${escapeHtml(match.confidenceShield.eligibilityConfidence)}</li>
+        <li>Company-fact confidence: ${escapeHtml(match.confidenceShield.companyFactConfidence)}</li>
+        <li>Official source verified: ${match.confidenceShield.officialSourceVerified ? "Yes" : "No"}</li>
+        <li>Last checked: ${escapeHtml(formatLastChecked(opportunity.lastChecked))}</li>
+        <li>Critical field summary: ${escapeHtml(match.confidenceShield.criticalFieldSummary)}</li>
+        ${match.risks.map((item) => `<li>${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
+      </ul>`
+    )}
+    ${renderDetailDisclosure(
+      "Opportunity details",
+      `<ul class="tight-list">
+        <li>Recommended action: ${escapeHtml(actionLabelOf(match.decision?.recommendedAction))}</li>
+        <li>Duration: ${escapeHtml(opportunity.duration ?? "Not stated")}</li>
+        <li>Guarantees: ${escapeHtml(guaranteeLabel)}</li>
+      </ul>
+      <ul class="tight-list">
+        ${preparationItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
       </ul>
       <div class="action-row">
         <button class="ghost-button" data-action="download-report" data-id="${opportunity.id}">Download report</button>
-      </div>
-    </div>
+      </div>`
+    )}
   `;
 }
 
@@ -3361,8 +3617,7 @@ function layout(content, runtime, derived, persistence, sourceCache) {
   const profileMode = getProfileMode(derived.company);
   const persistenceMeta = getPersistenceMeta(persistence);
   const sourceCacheMeta = getSourceCacheMeta(sourceCache);
-  const adminRoute = ADMIN_NAV_ITEMS.some((item) => item.id === uiState.route);
-  const customerAiTone = aiStatus.tone === "good" || aiStatus.tone === "neutral" ? "neutral" : aiStatus.tone;
+  const adminRoute = isAdminRoute(uiState.route);
   const messageToneClass =
     uiState.messageTone === "error"
       ? "error"
@@ -3380,11 +3635,12 @@ function layout(content, runtime, derived, persistence, sourceCache) {
       <main class="main-panel">
         <header class="topbar">
           <div>
-            <p class="eyebrow">${escapeHtml(formatApplicationDate(derived.now))}</p>
+            <p class="eyebrow">${adminRoute ? escapeHtml(formatApplicationDate(derived.now)) : "Active company"}</p>
             <h2>${escapeHtml(derived.company.legalName)}</h2>
+            ${adminRoute ? "" : `<p class="topbar-subtitle">Decision-first public opportunity assessment for this company.</p>`}
           </div>
           <div class="topbar-actions">
-            ${adminRoute ? pill(aiStatus.shortLabel, aiStatus.tone) : pill(aiStatus.shortLabel, customerAiTone)}
+            ${adminRoute ? pill(aiStatus.shortLabel, aiStatus.tone) : ""}
             ${adminRoute ? pill(runtime.appPhase ?? "phase-unknown", "neutral") : ""}
             ${adminRoute ? pill(persistenceMeta.label, persistenceMeta.tone) : ""}
             ${adminRoute && sourceCache ? pill(sourceCacheMeta.label, sourceCacheMeta.tone) : ""}
@@ -3943,6 +4199,11 @@ export function startApp(root, { runtime, store, services = {} }) {
   placspRefreshScheduler?.start?.({ ready: sourceCacheReady });
   bdnsRefreshScheduler?.start?.({ ready: sourceCacheReady });
 
+  root.addEventListener("toggle", (event) => {
+    if (event.target?.dataset?.control !== "developer-tools") return;
+    uiState.developerToolsOpen = Boolean(event.target.open);
+  });
+
   root.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-action]");
     if (!button) return;
@@ -3954,6 +4215,7 @@ export function startApp(root, { runtime, store, services = {} }) {
       uiState.route = button.dataset.route;
       if (uiState.route === "debug") uiState.detailTab = "debug";
       else if (uiState.detailTab === "debug") uiState.detailTab = "report";
+      if (isAdminRoute(uiState.route)) uiState.developerToolsOpen = true;
       render();
       return;
     }
@@ -3968,6 +4230,7 @@ export function startApp(root, { runtime, store, services = {} }) {
     if (action === "select") {
       uiState.selectedOpportunityId = button.dataset.id;
       uiState.detailTab = uiState.route === "debug" ? "debug" : "report";
+      uiState.detailPanelCollapsed = false;
       if (uiState.route === "overview") uiState.route = "opportunities";
       render();
       return;
@@ -3978,17 +4241,29 @@ export function startApp(root, { runtime, store, services = {} }) {
       const nextDepth = expandAnalysisDepth(derived.company.id, ACTIVE_SEARCH_POLICY);
       if (nextDepth === currentDepth) {
         setMessage(
-          `Current search depth is already at the local development maximum of ${ACTIVE_SEARCH_POLICY.maxAnalysis} analysed opportunities.`,
+          "You've reached the current search limit.",
           "info",
           "compact"
         );
       } else {
         setMessage(
-          `Search widened from ${currentDepth} to ${nextDepth} fully analysed opportunities for ${derived.company.legalName}.`,
+          `Finding more opportunities increased the analysed set from ${currentDepth} to ${nextDepth} for ${derived.company.legalName}.`,
           "success",
           "compact"
         );
       }
+      render();
+      return;
+    }
+
+    if (action === "collapse-report") {
+      uiState.detailPanelCollapsed = true;
+      render();
+      return;
+    }
+
+    if (action === "open-report") {
+      uiState.detailPanelCollapsed = false;
       render();
       return;
     }
@@ -4198,6 +4473,7 @@ export function startApp(root, { runtime, store, services = {} }) {
     event.preventDefault();
     uiState.selectedOpportunityId = card.dataset.id;
     uiState.detailTab = uiState.route === "debug" ? "debug" : "report";
+    uiState.detailPanelCollapsed = false;
     if (uiState.route === "overview") uiState.route = "opportunities";
     render();
   });
@@ -4209,6 +4485,7 @@ export function startApp(root, { runtime, store, services = {} }) {
         draft.activeCompanyId = element.value;
       }, makeAudit("Active company switched", `Switched active company to ${element.value}.`));
       uiState.detailTab = uiState.route === "debug" ? "debug" : "report";
+      uiState.detailPanelCollapsed = false;
       setMessage("Active company changed.", "info", "compact");
       render();
       return;

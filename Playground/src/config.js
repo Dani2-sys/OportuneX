@@ -6,7 +6,7 @@ export const NAV_ITEMS = [
   { id: "overview", label: "Overview" },
   { id: "opportunities", label: "Opportunities" },
   { id: "saved", label: "Saved" },
-  { id: "company", label: "Company Profile" },
+  { id: "company", label: "Company" },
   { id: "lab", label: "Intelligence Lab", admin: true },
   { id: "sources", label: "Data Sources", admin: true },
   { id: "debug", label: "Analysis Debugger", admin: true },
