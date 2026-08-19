@@ -272,6 +272,62 @@ test("published lot value remains the primary relevant lot amount", () => {
   assert.equal(lines.estimated_value?.displayValue, "€100,000 excl. VAT");
 });
 
+test("explicit lot locations are analysed independently and empty lot locations fall back to the top-level opportunity geography", () => {
+  const runtime = getRuntimeConfig();
+  const state = createDemoState();
+  const opportunity = makeContractOpportunity({
+    id: "opp-lot-location-audit",
+    title: "Multi-lot location audit",
+    estimatedMajor: 100000,
+    lots: [
+      {
+        id: "lot-catalonia-fallback",
+        title: "Lot Catalonia fallback",
+        description: "Electrical maintenance in the main operating area.",
+        cpvCodes: ["50711000", "45315300"],
+        keywords: ["electrical maintenance"],
+        value: createMoney({ major: 45000, amountType: "relevant_lot_value", vatStatus: "excluding" }),
+        location: {},
+        requirements: []
+      },
+      {
+        id: "lot-andalusia-explicit",
+        title: "Lot Andalusia explicit",
+        description: "Electrical maintenance outside the main operating area.",
+        cpvCodes: ["50711000", "45315300"],
+        keywords: ["electrical maintenance"],
+        value: createMoney({ major: 45000, amountType: "relevant_lot_value", vatStatus: "excluding" }),
+        location: {
+          municipality: "Seville",
+          province: "Seville",
+          autonomousCommunity: "Andalusia",
+          display: "Seville"
+        },
+        requirements: []
+      }
+    ]
+  });
+
+  const result = analyzeOpportunity(state.companyProfiles[0], opportunity, runtime, getEvaluationNow());
+  const byLotId = Object.fromEntries(result.lotMatches.map((lotMatch) => [lotMatch.lotId, lotMatch]));
+
+  assert.equal(result.lotMatches.length, 2);
+  assert.equal(byLotId["lot-catalonia-fallback"].locationLabel, "Tarragona");
+  assert.equal(byLotId["lot-andalusia-explicit"].locationLabel, "Seville");
+  assert.notEqual(
+    byLotId["lot-catalonia-fallback"].locationLabel,
+    byLotId["lot-andalusia-explicit"].locationLabel
+  );
+  assert.ok(
+    byLotId["lot-catalonia-fallback"].dimensions.geographicFit >
+      byLotId["lot-andalusia-explicit"].dimensions.geographicFit
+  );
+  assert.equal(
+    result.bestMatch.priorityScore,
+    Math.max(...result.lotMatches.map((lotMatch) => lotMatch.priorityScore))
+  );
+});
+
 test("award notices keep awarded value semantics and suppress active-pursuit blockers", () => {
   const runtime = getRuntimeConfig();
   const state = createDemoState();

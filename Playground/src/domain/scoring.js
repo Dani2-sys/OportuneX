@@ -3,6 +3,7 @@ import { clamp, weightedAverage } from "../utils.js";
 import { getCompanyFact, getFactValue } from "./company-profile.js";
 import { deadlineFeasibilityScore } from "./deadline.js";
 import { assessScaleFit } from "./money.js";
+import { resolveLotOrOpportunityLocation } from "./opportunity-scope.js";
 import { buildConfidenceShield } from "./evidence.js";
 import { qualificationReadinessScore } from "./eligibility.js";
 
@@ -241,7 +242,7 @@ export function assembleDimensions(company, opportunity, lot, semantic, eligibil
   const subject = {
     ...opportunity,
     ...(lot ?? {}),
-    location: lot?.location ?? opportunity.location
+    location: resolveLotOrOpportunityLocation(lot, opportunity)
   };
   const geographyAssessment = assessGeographicFit(company, subject);
   const geographicFit = geographyAssessment.score;

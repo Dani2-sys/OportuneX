@@ -110,11 +110,11 @@ test("upsertScopedAiReview replaces an existing company-opportunity pair instead
   );
 });
 
-test("semantic AI fingerprints use the v2 version prefix", () => {
+test("semantic AI fingerprints use the v3 version prefix", () => {
   const { company, opportunity, analysis } = createFixtureContext();
   const fingerprint = createAiVerificationContextFingerprint(company, opportunity, analysis);
 
-  assert.match(fingerprint, /^ai-context-v2:/);
+  assert.match(fingerprint, /^ai-context-v3:/);
 });
 
 test("AI review state is scoped by company and opportunity while legacy unscoped runs stay non-authoritative", () => {
@@ -416,13 +416,13 @@ test("presentation-only analysis label changes do not stale a saved review", () 
   assert.equal(reviewState.status, "current");
 });
 
-test("legacy v1 fingerprints remain stored but are treated as stale under v2", () => {
+test("saved v2 fingerprints remain stored but are treated as stale under v3", () => {
   const { company, opportunity, analysis } = createFixtureContext();
-  const v1Review = createScopedReview(company, opportunity, analysis, {
-    contextFingerprint: "ai-context-v1:deadbeef"
+  const v2Review = createScopedReview(company, opportunity, analysis, {
+    contextFingerprint: "ai-context-v2:deadbeef"
   });
 
-  const reviewState = getAiReviewState([v1Review], company, opportunity, analysis);
+  const reviewState = getAiReviewState([v2Review], company, opportunity, analysis);
 
   assert.equal(reviewState.hasSavedReview, true);
   assert.equal(reviewState.status, "stale");

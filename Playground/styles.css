@@ -976,6 +976,13 @@ textarea {
   margin: 0;
 }
 
+.detail-lot-context {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .title-disclosure {
   margin: 0;
 }
@@ -1185,6 +1192,18 @@ textarea {
   background: linear-gradient(180deg, var(--surface) 0%, #f8fbff 100%);
 }
 
+.ai-review-hero.tone-good {
+  border-color: rgba(28, 122, 67, 0.18);
+}
+
+.ai-review-hero.tone-warn {
+  border-color: rgba(167, 103, 8, 0.2);
+}
+
+.ai-review-hero.tone-bad {
+  border-color: rgba(188, 47, 42, 0.18);
+}
+
 .ai-review-hero-header {
   display: flex;
   justify-content: space-between;
@@ -1208,6 +1227,87 @@ textarea {
   color: var(--ink-soft);
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.ai-review-grid,
+.requirement-list-grid,
+.evidence-audit-list {
+  display: grid;
+  gap: 12px;
+}
+
+.ai-review-panel,
+.requirement-card,
+.requirement-audit-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.ai-review-panel h5,
+.requirement-card strong,
+.requirement-audit-card strong {
+  margin: 0;
+  color: var(--navy-strong);
+}
+
+.ai-review-important,
+.requirement-card p,
+.requirement-audit-card p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.ai-review-meta,
+.ai-review-trust,
+.detail-inline-note {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.ai-review-trust {
+  font-size: 0.92rem;
+}
+
+.ai-review-empty {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.ai-review-more {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+.ai-review-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.ai-review-list li,
+.ai-review-detail-list li {
+  overflow-wrap: anywhere;
+}
+
+.requirement-status {
+  color: var(--primary-hover);
+  font-weight: 700;
+}
+
+.detail-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .table-scroll {

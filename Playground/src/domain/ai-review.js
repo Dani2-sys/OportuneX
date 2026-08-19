@@ -1,4 +1,4 @@
-const FINGERPRINT_VERSION = "ai-context-v2";
+const FINGERPRINT_VERSION = "ai-context-v3";
 
 const VOLATILE_METADATA_KEYS = new Set([
   "lastChecked",

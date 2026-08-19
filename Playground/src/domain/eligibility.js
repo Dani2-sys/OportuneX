@@ -14,6 +14,7 @@ import {
   rangeCanConfirmCurrentEligibility,
   rangeCanConfirmEligibility
 } from "./company-profile.js";
+import { resolveLotOrOpportunityLocation } from "./opportunity-scope.js";
 import { normalizeText } from "../utils.js";
 
 function certificationValue(record) {
@@ -560,7 +561,7 @@ export function evaluateRequirement(company, opportunity, requirement, lot = nul
     keywords: lot?.keywords ?? opportunity.keywords,
     description: lot?.description ?? opportunity.description,
     title: lot?.title ?? opportunity.title,
-    location: lot?.location ?? opportunity.location
+    location: resolveLotOrOpportunityLocation(lot, opportunity)
   };
 
   switch (requirement.kind) {
@@ -583,7 +584,7 @@ export function evaluateRequirement(company, opportunity, requirement, lot = nul
       comparison = compareEmployeeCount(company, requirement, now);
       break;
     case "region":
-      comparison = compareRegion(company, requirement, opportunity);
+      comparison = compareRegion(company, requirement, subject);
       break;
     case "beneficiary":
       comparison = compareBeneficiary(company, requirement, now);

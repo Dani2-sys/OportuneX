@@ -262,9 +262,36 @@ function makeLongTitleTechnicalOpportunity() {
         excerpt: rawRequirement,
         sourceId: "ui-source-1",
         sourceType: "official_notice",
-        confidence: 0.96
+        confidence: 0.96,
+        sourcePath: "pcap.section.17.A.4"
       }
     ]
+  };
+}
+
+function makeDeadlineOnlyLowFitOpportunity() {
+  return {
+    ...makeCachedPlacspOpportunity({
+      id: "placsp:deadline-only-low-fit",
+      sourceOpportunityId: "https://contrataciondelestado.es/sindicacion/deadline-only-low-fit",
+      sourceNoticeVersionId: "placsp-version:deadline-only-low-fit",
+      referenceNumber: "PLACSP-DEADLINE-LOW-FIT"
+    }),
+    title: "Provincial asphalt resurfacing framework",
+    description: "Road resurfacing, line marking and asphalt reinforcement across provincial roads.",
+    cpvCodes: ["45233252"],
+    keywords: ["roadworks", "asphalt"],
+    location: {
+      municipality: "Bilbao",
+      province: "Bizkaia",
+      autonomousCommunity: "Basque Country",
+      display: "Bilbao"
+    },
+    deadline: parseSpanishDate("21/08/2026 14:00"),
+    estimatedValue: createMoney({ major: 2500000, amountType: "estimated_value", vatStatus: "excluding" }),
+    relevantValue: createMoney({ major: 2500000, amountType: "relevant_lot_value", vatStatus: "excluding" }),
+    lots: [],
+    requirements: []
   };
 }
 
@@ -468,7 +495,7 @@ function assertDecisionConsistency(root, store, scenario) {
   assert.match(
     root.innerHTML,
     new RegExp(
-      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
+      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it surfaced<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
     )
   );
 
@@ -485,7 +512,7 @@ function assertDecisionConsistency(root, store, scenario) {
   assert.match(
     root.innerHTML,
     new RegExp(
-      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
+      `data-id="${escapeRegExp(scenario.id)}"[\\s\\S]*?${escapeRegExp(actionLabel)}[\\s\\S]*?<strong>Why it surfaced<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardReason)}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(encodedCardQuestion)}<\\/p>`
     )
   );
   assert.match(root.innerHTML, new RegExp(`<p class="decision-reason">${escapeRegExp(encodedReason)}<\\/p>`));
@@ -942,7 +969,7 @@ test("card, detail, bucket and sorting state stay aligned across actionable, ver
   }
 });
 
-test("verify-first customer cards keep positive relevance under Why it matters and blocker detail under Needs checking", () => {
+test("verify-first customer cards keep positive relevance under Why it surfaced and blocker detail under Needs checking", () => {
   const previousWindow = globalThis.window;
   globalThis.window = {};
 
@@ -968,15 +995,42 @@ test("verify-first customer cards keep positive relevance under Why it matters a
     assert.match(
       root.innerHTML,
       new RegExp(
-        `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.positives[0].detail))}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(expectedCustomerNeedsChecking(analysed)))}<\\/p>`
+        `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it surfaced<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.positives[0].detail))}<\\/p>[\\s\\S]*?<strong>Needs checking<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(expectedCustomerNeedsChecking(analysed)))}<\\/p>`
       )
     );
     assert.doesNotMatch(
       root.innerHTML,
       new RegExp(
-        `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it matters<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.decision.mainReason))}<\\/p>`
+        `data-id="opp-electrical-maintenance"[\\s\\S]*?<strong>Why it surfaced<\\/strong>[\\s\\S]*?<p>${escapeRegExp(escapeHtml(analysed.decision.mainReason))}<\\/p>`
       )
     );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("low-fit cards do not use the deadline as the sole why-it-surfaced explanation", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [makeDeadlineOnlyLowFitOpportunity()];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "not_suitable" });
+
+    assert.match(root.innerHTML, /<strong>Why it surfaced<\/strong>/);
+    assert.match(
+      root.innerHTML,
+      new RegExp(escapeRegExp(escapeHtml("Some scope signals overlap with the company's activity, but overall fit remains limited.")))
+    );
+    assert.doesNotMatch(root.innerHTML, /<strong>Why it surfaced<\/strong>[\s\S]*?The published deadline is/i);
   } finally {
     globalThis.window = previousWindow;
   }
@@ -1000,7 +1054,7 @@ test("customer opportunity cards stay decision-first, show key facts, and keep n
     assert.ok(cardMatch, "Expected the highlighted customer opportunity card");
     assert.match(
       cardMatch[0],
-      /Investigate Now[\s\S]*?Strong Fit · \d+% match[\s\S]*?<span>Value<\/span>[\s\S]*?<span>Deadline<\/span>[\s\S]*?<span>Location<\/span>[\s\S]*?<strong>Why it matters<\/strong>[\s\S]*?<strong>Needs checking<\/strong>/
+      /Investigate Now[\s\S]*?Strong Fit · \d+% match[\s\S]*?<span>Value<\/span>[\s\S]*?<span>Deadline<\/span>[\s\S]*?<span>Location<\/span>[\s\S]*?<strong>Why it surfaced<\/strong>[\s\S]*?<strong>Needs checking<\/strong>/
     );
     assert.doesNotMatch(
       cardMatch[0],
@@ -1039,7 +1093,7 @@ test("long card titles and organisation names keep full text in markup while exp
   }
 });
 
-test("technical requirement boilerplate is cleaned from the high-level decision header while raw requirement detail remains below", () => {
+test("technical requirement boilerplate is cleaned from the customer report while raw requirement audit detail remains in Evidence", () => {
   const previousWindow = globalThis.window;
   globalThis.window = {};
 
@@ -1062,9 +1116,308 @@ test("technical requirement boilerplate is cleaned from the high-level decision 
     assert.doesNotMatch(decisionHero[1], /contrataciondelestado\.es\/codice/i);
     assert.doesNotMatch(decisionHero[1], /Specific tenderer requirement:\s*1:/i);
 
+    assert.match(root.innerHTML, /Needs verification — mandatory/);
+    assert.match(root.innerHTML, /Capacidad de obrar has not yet been verified\./);
+    assert.doesNotMatch(root.innerHTML, /ev-long-title-req/);
+    assert.doesNotMatch(root.innerHTML, /pcap\.section\.17\.A\.4/);
+
     assert.match(root.innerHTML, /Full official title/);
     assert.match(root.innerHTML, /Specific tenderer requirement: 1: http:\/\/contrataciondelestado\.es\/codice\/PlaceTendererQualification\/CapacidadDeObrar: Capacidad de obrar/);
     assert.equal((decisionHero[1].match(/class="detail-alert"/g) ?? []).length, 0);
+
+    clickAction(root, { action: "tab", tab: "evidence" });
+
+    assert.match(root.innerHTML, /Requirement audit/);
+    assert.match(root.innerHTML, /Specific tenderer requirement: 1: http:\/\/contrataciondelestado\.es\/codice\/PlaceTendererQualification\/CapacidadDeObrar: Capacidad de obrar/);
+    assert.match(root.innerHTML, /ev-long-title-req/);
+    assert.match(root.innerHTML, /pcap\.section\.17\.A\.4/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("customer report disclosures stay short on first load while keeping the main decision and deadline open", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s+open>\s*<summary>Why this matches<\/summary>/);
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s+open>\s*<summary>Deadline &amp; submission<\/summary>/);
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s*>\s*<summary>Eligibility &amp; blockers<\/summary>/);
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s*>\s*<summary>Financial picture<\/summary>/);
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s*>\s*<summary>Requirements<\/summary>/);
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s*>\s*<summary>Evidence &amp; confidence<\/summary>/);
+    assert.match(root.innerHTML, /<details class="detail-disclosure"\s*>\s*<summary>Opportunity details<\/summary>/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("multi-lot customer detail shows the selected-lot context while lot comparison stays debug-only", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "needs_verification" });
+    clickAction(root, { action: "select", id: "opp-multi-lot-framework" });
+
+    assert.match(root.innerHTML, /Assessment shown for .*published lots in this contract/);
+    assert.doesNotMatch(root.innerHTML, /Lot comparison/);
+
+    clickAction(root, { action: "route", route: "debug" });
+    clickAction(root, { action: "select", id: "opp-multi-lot-framework" });
+
+    assert.match(root.innerHTML, /Lot comparison/);
+    assert.match(root.innerHTML, /Published lot value/);
+    assert.match(root.innerHTML, /Selected/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("copy reference uses the official reference number and shows compact success feedback", async () => {
+  const previousWindow = globalThis.window;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  globalThis.window = {};
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      clipboard: {
+        copied: [],
+        async writeText(value) {
+          this.copied.push(value);
+        }
+      }
+    }
+  });
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [makeNoLotUiOpportunity()];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "worth_attention" });
+    clickAction(root, { action: "select", id: "opp-ui-no-published-lots" });
+    clickAction(root, { action: "tab", tab: "report" });
+    await clickAction(root, { action: "copy-reference", id: "opp-ui-no-published-lots" });
+
+    assert.deepEqual(globalThis.navigator.clipboard.copied, ["opp-ui-no-published-lots-ref"]);
+    assert.match(root.innerHTML, /Tender reference copied\./);
+  } finally {
+    globalThis.window = previousWindow;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test("PLACSP customer report replaces the broken direct notice link with Find on PLACSP and copies the official reference before opening search", async () => {
+  const previousWindow = globalThis.window;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const openCalls = [];
+  globalThis.window = {
+    open(...args) {
+      openCalls.push(args);
+    }
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      clipboard: {
+        copied: [],
+        async writeText(value) {
+          this.copied.push(value);
+        }
+      }
+    }
+  });
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [
+      makeCachedPlacspOpportunity({
+        id: "placsp:search-hotfix",
+        referenceNumber: "2094/2026",
+        noticeUrl: "https://contrataciondelestado.es/wps/poc?uri=deeplink-token",
+        sources: [
+          {
+            id: "placsp-hotfix-source-1",
+            organisation: "Plataforma de Contratacion del Sector Publico",
+            title: "Official PLACSP ATOM feed",
+            url: "https://contrataciondelsectorpublico.gob.es/sindicacion/feed.atom",
+            official: true,
+            metadata: {
+              sourceType: "official_open_data_atom",
+              entryLinkUrl: "http://contrataciondelestado.es/wps/poc?uri=deeplink-token"
+            }
+          }
+        ]
+      })
+    ];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "needs_verification" });
+    clickAction(root, { action: "select", id: "placsp:search-hotfix" });
+
+    assert.match(root.innerHTML, /Find on PLACSP/);
+    assert.match(root.innerHTML, /Copy reference/);
+    assert.doesNotMatch(root.innerHTML, /Open official notice/);
+    assert.match(root.innerHTML, /Paste the reference into the Expediente field\./);
+    assert.doesNotMatch(root.innerHTML, /TLS|certificate|Safari|broken government link|deeplink/i);
+
+    await clickAction(root, { action: "find-on-placsp", id: "placsp:search-hotfix" });
+
+    assert.deepEqual(globalThis.navigator.clipboard.copied, ["2094/2026"]);
+    assert.deepEqual(openCalls, [[
+      "https://contrataciondelestado.es/wps/portal/plataforma/buscador/",
+      "_blank",
+      "noopener,noreferrer"
+    ]]);
+    assert.match(root.innerHTML, /Reference 2094\/2026 copied\. Paste it into the Expediente field on PLACSP\./);
+  } finally {
+    globalThis.window = previousWindow;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test("PLACSP search remains available without a reliable reference and no fake reference is generated", async () => {
+  const previousWindow = globalThis.window;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const openCalls = [];
+  globalThis.window = {
+    open(...args) {
+      openCalls.push(args);
+    }
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      clipboard: {
+        copied: [],
+        async writeText(value) {
+          this.copied.push(value);
+        }
+      }
+    }
+  });
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [
+      makeCachedPlacspOpportunity({
+        id: "placsp:no-reference-hotfix",
+        referenceNumber: "",
+        noticeUrl: "https://contrataciondelestado.es/wps/poc?uri=deeplink-token"
+      })
+    ];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "needs_verification" });
+    clickAction(root, { action: "select", id: "placsp:no-reference-hotfix" });
+
+    assert.match(root.innerHTML, /Find on PLACSP/);
+    assert.doesNotMatch(root.innerHTML, /Copy reference/);
+    assert.match(root.innerHTML, /Open PLACSP search and use the buyer\/title details shown in OportuneX\./);
+    assert.match(root.innerHTML, /Reference:[\s\S]*?Not stated/);
+
+    await clickAction(root, { action: "find-on-placsp", id: "placsp:no-reference-hotfix" });
+
+    assert.deepEqual(globalThis.navigator.clipboard.copied, []);
+    assert.deepEqual(openCalls, [[
+      "https://contrataciondelestado.es/wps/portal/plataforma/buscador/",
+      "_blank",
+      "noopener,noreferrer"
+    ]]);
+    assert.match(root.innerHTML, /Open PLACSP search and use the buyer\/title details shown in OportuneX\./);
+    assert.doesNotMatch(root.innerHTML, /source hash|evidence ID/i);
+  } finally {
+    globalThis.window = previousWindow;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test("non-PLACSP customer report keeps authoritative official notice links unchanged", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [
+      {
+        ...makeNoLotUiOpportunity(),
+        sourceConnector: "bdns",
+        noticeUrl: "https://www.infosubvenciones.es/bdnstrans/GE/es/convocatoria/700007/document/notice"
+      }
+    ];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "scope", scope: "worth_attention" });
+    clickAction(root, { action: "select", id: "opp-ui-no-published-lots" });
+
+    assert.match(root.innerHTML, /Open official notice/);
+    assert.doesNotMatch(root.innerHTML, /Find on PLACSP/);
+    assert.match(root.innerHTML, /https:\/\/www\.infosubvenciones\.es\/bdnstrans\/GE\/es\/convocatoria\/700007\/document\/notice/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("deadline report actions show a calendar button only when a reliable deadline exists", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /Add deadline to calendar/);
+    assert.match(root.innerHTML, /Adds the published deadline with reminders 7 days and 1 day before\./);
+
+    clickAction(root, { action: "scope", scope: "all_analysed" });
+    clickAction(root, { action: "select", id: "opp-award-notice" });
+
+    assert.doesNotMatch(root.innerHTML, /Add deadline to calendar/);
+    assert.match(root.innerHTML, /Calendar event unavailable until a reliable deadline is published\./);
   } finally {
     globalThis.window = previousWindow;
   }
@@ -1204,7 +1557,7 @@ test("Saved route keeps the user on Saved, shows the full detail panel, and rese
     clickAction(root, { action: "select", id: "opp-efficiency-grant" });
 
     assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
-    assert.match(root.innerHTML, /AI review/);
+    assert.match(root.innerHTML, /AI verification/);
     assert.match(root.innerHTML, /Run AI verification/);
 
     clickAction(root, { action: "save", id: "opp-efficiency-grant" });
@@ -1212,7 +1565,7 @@ test("Saved route keeps the user on Saved, shows the full detail panel, and rese
     assert.deepEqual(store.getState().savedOpportunityIds, ["opp-electrical-maintenance"]);
     assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
     assert.match(root.innerHTML, /Electrical maintenance contract — Tarragona municipal facilities/);
-    assert.match(root.innerHTML, /AI review/);
+    assert.match(root.innerHTML, /AI verification/);
     assert.doesNotMatch(root.innerHTML, /Catalonia energy-efficiency grant for SME building services/);
   } finally {
     globalThis.window = previousWindow;
@@ -1317,7 +1670,7 @@ test("Saved route keeps a low-rank saved opportunity fully analysed and accessib
 
     assert.match(root.innerHTML, /class="nav-item active" data-action="route" data-route="saved"/);
     assert.match(root.innerHTML, /Saved low-score opportunity/);
-    assert.match(root.innerHTML, /AI review/);
+    assert.match(root.innerHTML, /AI verification/);
     assert.match(root.innerHTML, /Run AI verification/);
   } finally {
     globalThis.window = previousWindow;

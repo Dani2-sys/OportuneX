@@ -102,18 +102,30 @@ test("AI verifier request uses configured server-side model and strict structure
   );
 });
 
-test("verification prompt is framed as an independent second-pass layer", () => {
+test("verification prompt defines review statuses, company-focused advisory style, and the critical invariants", () => {
   const prompt = buildVerificationPrompt({
-    company: { legalName: "Prospect Installations SL" },
+    company: { legalName: "Prospect Installations SL", tradingName: "Prospect Installations" },
     opportunity: { title: "Electrical maintenance contract" },
     analysis: { recommendationClass: "VERIFY_BEFORE_DECIDING" }
   });
 
   assert.match(prompt, /independent second-pass verification layer/i);
   assert.doesNotMatch(prompt, /deterministic second-pass verification layer/i);
+  assert.match(prompt, /accepted:\s+The first OportuneX assessment is materially sound as presented/i);
+  assert.match(prompt, /needs_review:\s+The verification completed successfully, but found a material unresolved issue/i);
+  assert.match(prompt, /rejected:\s+The first assessment is materially unreliable or unsafe to rely on as presented/i);
+  assert.match(prompt, /Write for the decision-maker at the ACTIVE COMPANY/i);
+  assert.match(prompt, /Use the company's trading name when available, otherwise its legal name/i);
+  assert.match(prompt, /For Prospect Installations/i);
+  assert.match(prompt, /Prospect Installations should verify/i);
+  assert.match(prompt, /notes must be 2-4 concise advisory sentences/i);
+  assert.match(prompt, /warnings must be concise, actionable follow-up points/i);
+  assert.match(prompt, /disagreements must be concise, material differences/i);
   assert.match(prompt, /amountMinor uses currency minor units/i);
   assert.match(prompt, /publication date or publication timestamp is not a submission deadline/i);
   assert.match(prompt, /missing recorded evidence|absence of recorded evidence/i);
+  assert.match(prompt, /Do not invent lot semantics when the opportunity has no explicit relevant lot context/i);
+  assert.match(prompt, /Historical company evidence is not a confirmed current fact/i);
   assert.match(prompt, /VERIFY_BEFORE_DECIDING is an action, not a fit band/i);
 });
 

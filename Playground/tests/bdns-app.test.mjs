@@ -425,7 +425,7 @@ test("BDNS cache hydrates on reload, coexists with PLACSP, preserves saved ids, 
 
     await clickAction(root, { action: "route", route: "opportunities" });
     await clickAction(root, { action: "select", id: oldBdnsOpportunity.id });
-    assert.match(root.innerHTML, /AI reviewed/);
+    assert.match(root.innerHTML, /Assessment confirmed/);
 
     await clickAction(root, { action: "sync-bdns" });
     await clickAction(root, { action: "route", route: "opportunities" });

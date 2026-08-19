@@ -17,6 +17,19 @@ import { demoCompany } from "./data/demo.js";
 import { evaluationFixtures } from "./data/evaluation-fixtures.js";
 import { analyzePortfolio } from "./domain/analysis.js";
 import {
+  buildCustomerReportExport,
+  buildRequirementEvidenceAuditRows,
+  buildRequirementPresentationRows,
+  collapseWhitespace,
+  getCompanyDisplayName,
+  getCustomerAiReviewLabel,
+  getCustomerAiReviewTone,
+  isDuplicateHighLevelText,
+  presentCustomerGuaranteeText,
+  presentCustomerDecisionText,
+  resolveOfficialNoticeAccess
+} from "./domain/customer-presentation.js";
+import {
   buildCompanyConflicts,
   buildCompanyUnknowns,
   computeDecisionProfileCompleteness,
@@ -43,8 +56,8 @@ import {
 } from "./domain/company-profile.js";
 import { runEvaluationSuite } from "./domain/evaluation.js";
 import { formatDeadline, formatLastChecked, isNonActionableDerivedStatus, parseSpanishDate, urgencyChip } from "./domain/deadline.js";
-import { describeEvidenceBackedText } from "./domain/evidence.js";
 import { formatMoney, parseMoneyInput } from "./domain/money.js";
+import { buildOpportunityCalendarEvent, downloadCalendarEvent } from "./domain/opportunity-calendar.js";
 import {
   createAiVerificationContextFingerprint,
   extractPersistedAiVerificationResult,
@@ -70,7 +83,7 @@ import { createAnalysisCache } from "./services/analysis-cache.js";
 import { runAiVerification } from "./services/ai-client.js";
 import { buildCandidateFunnel } from "./services/candidate-funnel.js";
 import { serializeStateForPersistence } from "./state/store.js";
-import { clamp, clone, escapeHtml, formatDate, formatNumber, toSlug, uid } from "./utils.js";
+import { clamp, clone, escapeHtml, formatDate, formatNumber, uid } from "./utils.js";
 
 const OPPORTUNITY_SCOPES = [
   { id: "worth_attention", label: "Worth your attention" },
@@ -118,21 +131,7 @@ const BDNS_RECONCILE_PAGE_SIZE = 50;
 const CUSTOMER_NAV_ITEMS = NAV_ITEMS.filter((item) => !item.admin);
 const ADMIN_NAV_ITEMS = NAV_ITEMS.filter((item) => item.admin);
 
-const AI_REVIEW_STATUS_COPY = {
-  accepted: "Accepted",
-  needs_review: "Needs review",
-  rejected: "Rejected"
-};
-
 const CUSTOMER_WHY_BLOCKLIST = /potential hard blocker|eligibility requirements not yet assessed|confirmed eligibility failure|deadline passed|already awarded|cancelled|suspended|unrelated capability|no further action is recommended/i;
-const TECHNICAL_REQUIREMENT_URL_RE = /https?:\/\/[^\s)]+/i;
-const TECHNICAL_REQUIREMENT_URL_GLOBAL_RE = /https?:\/\/[^\s)]+/gi;
-const TECHNICAL_REQUIREMENT_PART_RE =
-  /^(specific tenderer requirement|qualification requirement|technical qualification|financial qualification)$/i;
-const TECHNICAL_REQUIREMENT_PREFIX_RE =
-  /\b(specific tenderer requirement|qualification requirement|technical qualification|financial qualification)\b/i;
-const PUBLISHED_REQUIREMENT_PREFIX_RE =
-  /^please verify whether the company satisfies the published requirement:\s*/i;
 
 const UI_STATE_DEFAULTS = {
   route: "overview",
@@ -225,82 +224,19 @@ function primaryOpenIssue(item) {
   return item?.potentialHardBlockers?.[0] ?? item?.unknowns?.[0] ?? item?.blockers?.[0] ?? null;
 }
 
-function collapseWhitespace(text) {
-  return String(text ?? "").replace(/\s+/g, " ").trim();
-}
-
-function stripTechnicalRequirementBoilerplate(text) {
-  const original = collapseWhitespace(text);
-  if (!original) return "";
-
-  const cleaned = original.replace(TECHNICAL_REQUIREMENT_URL_GLOBAL_RE, " ");
-  const filteredParts = cleaned
-    .split(/\s*:\s*/)
-    .map((part) => collapseWhitespace(part))
-    .filter(Boolean)
-    .filter((part) => !TECHNICAL_REQUIREMENT_PART_RE.test(part))
-    .filter((part) => !/^\d+$/.test(part));
-
-  const candidate = collapseWhitespace(filteredParts.join(": ")).replace(/^[\s:;,.()-]+|[\s:;,.()-]+$/g, "");
-  return candidate || original;
-}
-
-function hasTechnicalRequirementBoilerplate(text) {
-  const value = collapseWhitespace(text);
-  return (
-    Boolean(value) &&
-    (TECHNICAL_REQUIREMENT_URL_RE.test(value) ||
-      TECHNICAL_REQUIREMENT_PREFIX_RE.test(value) ||
-      PUBLISHED_REQUIREMENT_PREFIX_RE.test(value))
-  );
-}
-
-function normalizeCustomerComparisonText(text) {
-  return stripTechnicalRequirementBoilerplate(text)
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
-}
-
-function isDuplicateHighLevelText(candidate, references = []) {
-  const normalizedCandidate = normalizeCustomerComparisonText(candidate);
-  if (!normalizedCandidate) return true;
-  return references.some((reference) => {
-    const normalizedReference = normalizeCustomerComparisonText(reference);
-    if (!normalizedReference) return false;
-    return (
-      normalizedReference === normalizedCandidate ||
-      normalizedReference.includes(normalizedCandidate) ||
-      normalizedCandidate.includes(normalizedReference)
-    );
+function customerIssueStatement(label, item, { verificationFallback = false } = {}) {
+  if (!item) return `${label}: Not stated`;
+  const detail = presentCustomerDecisionText(item.detail, {
+    issueTitle: item.title,
+    verificationFallback
   });
-}
-
-function presentCustomerDecisionText(text, { issueTitle = "", verificationFallback = false } = {}) {
-  const original = collapseWhitespace(text);
-  if (!original) return "";
-
-  const cleanedTitle = stripTechnicalRequirementBoilerplate(issueTitle);
-  const hadTechnicalBoilerplate = hasTechnicalRequirementBoilerplate(original);
-
-  if (!hadTechnicalBoilerplate && !/^potential hard blocker:\s*/i.test(original)) {
-    return original;
+  const normalizedTitle = collapseWhitespace(item.title).toLowerCase();
+  const normalizedDetail = collapseWhitespace(detail).toLowerCase();
+  if (!detail) return `${label}: ${item.title}`;
+  if (!item.title || normalizedDetail.startsWith(normalizedTitle) || normalizedDetail.startsWith(label.toLowerCase())) {
+    return `${label}: ${detail}`;
   }
-
-  const withoutPublishedPrefix = collapseWhitespace(original.replace(PUBLISHED_REQUIREMENT_PREFIX_RE, ""));
-  const cleaned = stripTechnicalRequirementBoilerplate(withoutPublishedPrefix);
-
-  if (/^potential hard blocker:\s*/i.test(original) && cleanedTitle) {
-    return `Potential hard blocker: ${cleanedTitle} not yet verified.`;
-  }
-
-  if (verificationFallback && cleanedTitle && hadTechnicalBoilerplate) {
-    return `${cleanedTitle} has not yet been verified.`;
-  }
-
-  if (cleaned && cleaned !== cleanedTitle) return cleaned;
-  if (cleanedTitle && hadTechnicalBoilerplate) return `${cleanedTitle} has not yet been verified.`;
-  return cleaned || original;
+  return `${label}: ${item.title} — ${detail}`;
 }
 
 function actionTone(action) {
@@ -348,18 +284,6 @@ function companyStatusTone(status) {
   if (status === "public_verified" || status === "public_reported") return "neutral";
   if (status === "inferred" || status === "unknown") return "warn";
   return "bad";
-}
-
-function requirementStatusLabel(row) {
-  if (row.status === "needs_verification" && row.mandatory) {
-    return "Needs verification — mandatory";
-  }
-  if (row.status === "failed" && row.mandatory) return "Failed — mandatory";
-  if (row.status === "confirmed" && row.mandatory) return "Confirmed — mandatory";
-  if (row.status === "needs_verification") return "Needs verification";
-  if (row.status === "failed") return "Failed";
-  if (row.status === "confirmed") return "Confirmed";
-  return row.status ?? "Unknown";
 }
 
 function getAiStatusMeta(ai = {}) {
@@ -781,19 +705,62 @@ function isAiReviewBusy(companyId, opportunityId) {
   return uiState.aiBusyKey === aiPairKey(companyId, opportunityId);
 }
 
+function aiConfidenceLabel(value = "") {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (!normalized) return "Not stated";
+  return CONFIDENCE_COPY[normalized] ?? `${normalized[0]}${normalized.slice(1).toLowerCase()}`;
+}
+
+function safeLinkHref(value) {
+  const raw = collapseWhitespace(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function buildAiReviewChangeItems(result = {}, match) {
+  const items = [];
+  const currentAction = match?.decision?.recommendedAction?.code ?? null;
+  const currentFitBand = fitBandOf(match);
+
+  if (result.corrected_fit_band && result.corrected_fit_band !== currentFitBand) {
+    items.push(`Fit: ${fitBandLabelOf(match)} → ${FIT_BAND_COPY[result.corrected_fit_band] ?? result.corrected_fit_band}`);
+  }
+
+  if (result.corrected_action && result.corrected_action !== currentAction) {
+    items.push(`Action: ${actionLabelOf(match?.decision?.recommendedAction)} → ${ACTION_COPY[result.corrected_action] ?? result.corrected_action}`);
+  }
+
+  (Array.isArray(result.disagreements) ? result.disagreements : [])
+    .filter(Boolean)
+    .forEach((item) => items.push(item));
+
+  return items;
+}
+
 function aiReviewStatusMeta(aiReview) {
-  if (aiReview?.status === "current") {
+  const record = aiReview?.review ?? null;
+  const reviewStatus = record?.result?.review_status ?? null;
+
+  if (aiReview?.status === "current" && record) {
     return {
-      label: "AI reviewed",
-      tone: "good",
-      detail: "This saved review matches the current company, opportunity, and deterministic analysis context."
+      label: getCustomerAiReviewLabel(reviewStatus),
+      tone: getCustomerAiReviewTone(reviewStatus),
+      detail: "AI verification completed for the current company, opportunity, and deterministic analysis context."
     };
   }
   if (aiReview?.status === "stale") {
     return {
       label: "Saved review may be outdated",
       tone: "warn",
-      detail: aiReview.staleMessage
+      detail:
+        aiReview.staleMessage ||
+        "A saved AI verification exists, but the company or opportunity context changed. Re-run verification before relying on it."
     };
   }
   return {
@@ -807,22 +774,23 @@ function aiReviewStatusMeta(aiReview) {
 
 function aiReviewResult(result = {}) {
   return {
-    reviewStatus: AI_REVIEW_STATUS_COPY[result.review_status] ?? "Not stated",
+    reviewStatus: getCustomerAiReviewLabel(result.review_status),
+    reviewTone: getCustomerAiReviewTone(result.review_status),
     correctedAction: result.corrected_action ? ACTION_COPY[result.corrected_action] ?? result.corrected_action : null,
     correctedFitBand: result.corrected_fit_band ? FIT_BAND_COPY[result.corrected_fit_band] ?? result.corrected_fit_band : null,
-    confidence: result.confidence ? result.confidence[0].toUpperCase() + result.confidence.slice(1) : "Not stated",
+    confidence: aiConfidenceLabel(result.confidence),
     warnings: Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [],
     disagreements: Array.isArray(result.disagreements) ? result.disagreements.filter(Boolean) : [],
-    notes: result.notes ?? ""
+    notes: collapseWhitespace(result.notes ?? "")
   };
 }
 
-function aiReviewSummary(aiReview, match, persistence) {
+function aiReviewSummary(aiReview, match, persistence, company) {
   const statusMeta = aiReviewStatusMeta(aiReview);
   const record = aiReview?.review ?? null;
   const summary = aiReviewResult(record?.result ?? {});
-  const currentAction = match?.decision?.recommendedAction?.code ?? null;
-  const currentFitBand = fitBandOf(match);
+  const notePreview =
+    summary.notes.match(/[^.!?]+[.!?]?/g)?.slice(0, 3).join(" ").trim() ?? summary.notes;
   const savedMode =
     persistence?.status === "available"
       ? "Saved locally"
@@ -830,9 +798,10 @@ function aiReviewSummary(aiReview, match, persistence) {
 
   return {
     statusMeta,
+    companyName: getCompanyDisplayName(company),
     completedAt: record?.completedAt ? formatDate(record.completedAt, { includeTime: true }) : null,
-    showCorrectedAction: Boolean(summary.correctedAction && record?.result?.corrected_action !== currentAction),
-    showCorrectedFitBand: Boolean(summary.correctedFitBand && record?.result?.corrected_fit_band !== currentFitBand),
+    changeItems: record ? buildAiReviewChangeItems(record.result ?? {}, match) : [],
+    notePreview,
     savedMode,
     ...summary
   };
@@ -1525,14 +1494,28 @@ function renderDetailDisclosure(title, content, { open = false } = {}) {
   `;
 }
 
-function renderAiVerificationHero(opportunity, match, aiReview, persistence, companyId, showTechnicalPath = false) {
-  const busy = isAiReviewBusy(companyId, opportunity.id);
-  const summary = aiReviewSummary(aiReview, match, persistence);
+function renderAiReviewList(items = [], fallback, { limit = null } = {}) {
+  const visibleItems = Number.isFinite(limit) ? items.slice(0, limit) : items;
+  const remainingCount = Number.isFinite(limit) ? Math.max(0, items.length - visibleItems.length) : 0;
+  if (!visibleItems.length) return `<p class="ai-review-empty">${escapeHtml(fallback)}</p>`;
+  return `
+    <ul class="ai-review-list">${visibleItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    ${remainingCount ? `<p class="ai-review-more">+ ${escapeHtml(String(remainingCount))} more in Detailed AI reasoning.</p>` : ""}
+  `;
+}
+
+function renderAiVerificationHero(opportunity, match, aiReview, persistence, company, showTechnicalPath = false) {
+  const busy = isAiReviewBusy(company?.id, opportunity.id);
+  const summary = aiReviewSummary(aiReview, match, persistence, company);
   const record = aiReview?.review ?? null;
-  const buttonLabel = aiReview?.buttonLabel ?? "Verify assessment with AI";
+  const buttonLabel = aiReview?.buttonLabel ?? "Run AI verification";
+  const currentReview = aiReview?.status === "current" && record;
+  const staleReview = aiReview?.status === "stale" && record;
+  const confidenceToneClass =
+    summary.reviewTone === "bad" ? "bad" : summary.reviewTone === "warn" ? "warn" : "good";
 
   return `
-    <div class="ai-review-card ai-review-hero">
+    <div class="ai-review-card ai-review-hero tone-${escapeHtml(summary.statusMeta.tone)}">
       <div class="ai-review-hero-header">
         <div>
           <h4>AI verification</h4>
@@ -1540,6 +1523,7 @@ function renderAiVerificationHero(opportunity, match, aiReview, persistence, com
         </div>
         <div class="card-topline">
           ${pill(summary.statusMeta.label, summary.statusMeta.tone)}
+          ${currentReview ? pill(`${summary.confidence} confidence`, confidenceToneClass) : ""}
           ${record?.completedAt ? pill(summary.savedMode, persistence?.status === "available" ? "neutral" : "warn") : ""}
         </div>
       </div>
@@ -1553,33 +1537,64 @@ function renderAiVerificationHero(opportunity, match, aiReview, persistence, com
         >
           ${busy ? "Verifying..." : escapeHtml(buttonLabel)}
         </button>
-        ${showTechnicalPath ? `<button class="ghost-button" data-action="tab" data-tab="debug">Technical details</button>` : `<button class="ghost-button" data-action="route" data-route="debug">Open Analysis Debugger</button>`}
+        ${showTechnicalPath ? `<button class="ghost-button" data-action="tab" data-tab="debug">Technical details</button>` : ""}
       </div>
       ${
-        record
+        staleReview
           ? `
-              <ul class="tight-list">
-                <li>AI verification completed${summary.completedAt ? ` · ${escapeHtml(summary.completedAt)}` : ""}</li>
-                <li>Review status: ${escapeHtml(summary.reviewStatus)}</li>
-                <li>Confidence: ${escapeHtml(summary.confidence)}</li>
-                ${
-                  summary.disagreements.length
-                    ? `<li>Material disagreements: ${escapeHtml(summary.disagreements.slice(0, 3).join("; "))}</li>`
-                    : ""
-                }
-                ${
-                  summary.warnings.length
-                    ? `<li>Warnings: ${escapeHtml(summary.warnings.slice(0, 3).join("; "))}</li>`
-                    : "<li>Warnings: None recorded.</li>"
-                }
-                ${summary.showCorrectedAction ? `<li>AI corrected action: ${escapeHtml(summary.correctedAction)}</li>` : ""}
-                ${summary.showCorrectedFitBand ? `<li>AI corrected fit: ${escapeHtml(summary.correctedFitBand)}</li>` : ""}
-                ${summary.notes ? `<li>Notes: ${escapeHtml(summary.notes)}</li>` : ""}
-              </ul>
+              <div class="ai-review-panel">
+                <p class="ai-review-important">${escapeHtml(summary.statusMeta.detail)}</p>
+                ${summary.completedAt ? `<p class="ai-review-meta">Previous verification: ${escapeHtml(summary.completedAt)}</p>` : ""}
+                <p class="ai-review-trust">Use this verification to focus your review. Confirm final eligibility, documents and submission details in the official notice before acting.</p>
+              </div>
             `
-          : aiReview?.isLegacyAvailable
-            ? `<p class="inline-note">A legacy unscoped AI review exists in debug only. Run a fresh company-scoped review for customer-facing use.</p>`
-            : ""
+          : currentReview
+            ? `
+                <div class="ai-review-grid">
+                  <section class="ai-review-panel">
+                    <h5>What this means for ${escapeHtml(summary.companyName)}</h5>
+                    <p class="ai-review-important">${escapeHtml(summary.notePreview || "No additional AI advisory note was recorded.")}</p>
+                  </section>
+                  <section class="ai-review-panel">
+                    <h5>What ${escapeHtml(summary.companyName)} should verify next</h5>
+                    ${renderAiReviewList(summary.warnings, "No new material warning was identified.", { limit: 4 })}
+                  </section>
+                  <section class="ai-review-panel">
+                    <h5>What changed after verification</h5>
+                    ${renderAiReviewList(summary.changeItems, "No material change to the OportuneX assessment.", { limit: 3 })}
+                  </section>
+                </div>
+                ${renderDetailDisclosure(
+                  "Detailed AI reasoning",
+                  `
+                    <div class="detail-section">
+                      <h4>Advisory note</h4>
+                      <p class="ai-review-important">${escapeHtml(summary.notes || "No additional AI advisory note was recorded.")}</p>
+                    </div>
+                    <div class="detail-section">
+                      <h4>Warnings</h4>
+                      ${renderAiReviewList(summary.warnings, "No warning was recorded.")}
+                    </div>
+                    <div class="detail-section">
+                      <h4>Disagreements</h4>
+                      ${renderAiReviewList(summary.disagreements, "No disagreement was recorded.")}
+                    </div>
+                    <ul class="tight-list ai-review-detail-list">
+                      <li>Verification completed${summary.completedAt ? ` · ${escapeHtml(summary.completedAt)}` : ""}</li>
+                      <li>Customer review status: ${escapeHtml(summary.reviewStatus)}</li>
+                      <li>Confidence: ${escapeHtml(summary.confidence)}</li>
+                      <li>Warnings recorded: ${escapeHtml(String(summary.warnings.length))}</li>
+                      <li>Disagreements recorded: ${escapeHtml(String(summary.disagreements.length))}</li>
+                      ${summary.correctedAction ? `<li>Corrected action field: ${escapeHtml(summary.correctedAction)}</li>` : ""}
+                      ${summary.correctedFitBand ? `<li>Corrected fit field: ${escapeHtml(summary.correctedFitBand)}</li>` : ""}
+                    </ul>
+                  `
+                )}
+                <p class="ai-review-trust">Use this verification to focus your review. Confirm final eligibility, documents and submission details in the official notice before acting.</p>
+              `
+            : aiReview?.isLegacyAvailable
+              ? `<p class="inline-note">A legacy unscoped AI review exists in debug only. Run a fresh company-scoped review for customer-facing use.</p>`
+              : `<p class="inline-note">AI verification is optional. OportuneX's deterministic assessment remains first.</p>`
       }
     </div>
   `;
@@ -1629,7 +1644,7 @@ function renderOpportunityPreview(item, { now, aiReview, persistence, showAction
         ${renderOpportunityFact("Location", item.locationLabel || "Location not stated")}
       </div>
       <div class="opportunity-copy-block">
-        <strong>Why it matters</strong>
+        <strong>Why it surfaced</strong>
         <p>${escapeHtml(whyItMatters)}</p>
       </div>
       <div class="opportunity-copy-block">
@@ -1718,12 +1733,28 @@ function renderOpportunityScopeTabs(derived) {
 }
 
 function customerWhyItMatters(item) {
-  const positiveDetail = item?.positives?.find((entry) => entry?.detail)?.detail;
-  if (positiveDetail) return positiveDetail;
+  const positives = Array.isArray(item?.positives) ? item.positives : [];
+  const nonDeadlinePositives = positives.filter(
+    (entry) =>
+      entry?.detail &&
+      !/deadline/i.test(entry?.title ?? "") &&
+      !/published deadline/i.test(entry?.detail ?? "") &&
+      !(/geographic/i.test(entry?.title ?? "") && /\bweak\b/i.test(entry?.detail ?? ""))
+  );
+  const preferredPositive =
+    positives.find((entry) => /capability/i.test(entry?.title ?? "")) ??
+    positives.find((entry) => /geographic/i.test(entry?.title ?? "") && !/\bweak\b/i.test(entry?.detail ?? "")) ??
+    positives.find((entry) => /scale fit/i.test(entry?.title ?? "")) ??
+    nonDeadlinePositives[0];
+  if (preferredPositive?.detail) return preferredPositive.detail;
 
   const candidate = item?.decision?.mainReason ?? item?.executiveVerdict ?? "";
-  if (candidate && !CUSTOMER_WHY_BLOCKLIST.test(candidate)) {
+  if (candidate && !CUSTOMER_WHY_BLOCKLIST.test(candidate) && !/published deadline/i.test(candidate)) {
     return presentCustomerDecisionText(candidate, { issueTitle: primaryOpenIssue(item)?.title });
+  }
+
+  if (positives.length || (item?.dimensions?.baseCapabilityFit ?? 0) > 0 || (item?.matchScore ?? 0) >= 25) {
+    return "Some scope signals overlap with the company's activity, but overall fit remains limited.";
   }
 
   return "Relevant opportunity signals remain limited under the current evidence set.";
@@ -3169,55 +3200,6 @@ function renderOpportunityListMini(matches) {
     .join("");
 }
 
-function renderAiReviewSection(opportunity, match, aiReview, persistence, companyId, showTechnicalPath = false) {
-  const busy = isAiReviewBusy(companyId, opportunity.id);
-  const summary = aiReviewSummary(aiReview, match, persistence);
-  const record = aiReview?.review ?? null;
-
-  return `
-    <div class="detail-section">
-      <h4>AI review</h4>
-      <div class="ai-review-card">
-        <div class="card-topline">
-          ${pill(summary.statusMeta.label, summary.statusMeta.tone)}
-          ${record?.completedAt ? pill(summary.savedMode, persistence?.status === "available" ? "neutral" : "warn") : ""}
-        </div>
-        <p>${escapeHtml(summary.statusMeta.detail)}</p>
-        ${summary.completedAt ? `<p><strong>Reviewed:</strong> ${escapeHtml(summary.completedAt)}</p>` : ""}
-        ${
-          record
-            ? `
-                <ul class="tight-list">
-                  <li>Review status: ${escapeHtml(summary.reviewStatus)}</li>
-                  <li>Confidence: ${escapeHtml(summary.confidence)}</li>
-                  ${summary.showCorrectedAction ? `<li>AI corrected action: ${escapeHtml(summary.correctedAction)}</li>` : ""}
-                  ${summary.showCorrectedFitBand ? `<li>AI corrected fit: ${escapeHtml(summary.correctedFitBand)}</li>` : ""}
-                  ${
-                    summary.warnings.length
-                      ? `<li>Main warnings: ${escapeHtml(summary.warnings.slice(0, 3).join("; "))}</li>`
-                      : "<li>Main warnings: None recorded.</li>"
-                  }
-                  ${summary.notes ? `<li>Notes: ${escapeHtml(summary.notes)}</li>` : ""}
-                </ul>
-              `
-            : ""
-        }
-        ${
-          !record && aiReview?.isLegacyAvailable
-            ? `<p class="inline-note">A legacy unscoped AI review exists for this opportunity, but it is not shown as authoritative for the current company.</p>`
-            : ""
-        }
-        <div class="action-row">
-          <button class="button-primary" data-action="ai-verify" data-id="${opportunity.id}" ${busy ? "disabled" : ""}>
-            ${busy ? "Verifying..." : escapeHtml(aiReview?.buttonLabel ?? "Run AI verification")}
-          </button>
-          ${showTechnicalPath ? `<button class="ghost-button" data-action="tab" data-tab="debug">Technical details</button>` : `<button class="ghost-button" data-action="route" data-route="debug">Open Analysis Debugger</button>`}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function renderDetailPanel(derived, persistence, options = {}) {
   const showDebugger = typeof options === "boolean" ? options : Boolean(options?.showDebugger);
   const collapsible = typeof options === "object" ? Boolean(options?.collapsible) : false;
@@ -3253,6 +3235,10 @@ function renderDetailPanel(derived, persistence, options = {}) {
     raw.type === "grant" && selected.financialPicture?.primaryLine?.id === "programme_budget"
       ? "Programme budget"
       : "Published opportunity value";
+  const lotContextNote =
+    selected.publishedLotCount > 1 && selected.lotLabel
+      ? `Assessment shown for ${selected.lotLabel} · ${selected.publishedLotCount} published lots in this contract`
+      : "";
 
   return `
     <aside class="detail-panel" tabindex="0" aria-label="Opportunity report">
@@ -3262,6 +3248,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
             <p class="eyebrow">Opportunity report</p>
             <h3 class="detail-report-title">${escapeHtml(selected.displayTitle)}</h3>
             <p class="detail-report-subline">${escapeHtml(authorityLabel)} · ${escapeHtml(OPPORTUNITY_TYPES[raw.type] ?? "Opportunity")}</p>
+            ${lotContextNote ? `<p class="detail-lot-context">${escapeHtml(lotContextNote)}</p>` : ""}
             ${renderFullTitleDisclosure(selected.displayTitle)}
           </div>
           ${
@@ -3291,7 +3278,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
             ${statCard("Location", selected.locationLabel || "Not stated")}
           </div>
         </div>
-        ${renderAiVerificationHero(raw, selected, derived.selectedAiReview, persistence, derived.company.id, showDebugger)}
+        ${renderAiVerificationHero(raw, selected, derived.selectedAiReview, persistence, derived.company, showDebugger)}
         <div class="tab-row">
           ${tabs
             .map(
@@ -3305,7 +3292,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
         </div>
         ${
           uiState.detailTab === "report"
-            ? renderReportTab(raw, selected)
+            ? renderReportTab(derived.company, derived.now, raw, selected)
             : uiState.detailTab === "evidence"
               ? renderEvidenceTab(raw, selected)
               : renderDebugTab(raw, selected, derived.selectedAiReview, derived.funnel.byOpportunityId?.[selected.opportunityId] ?? null)
@@ -3315,9 +3302,18 @@ function renderDetailPanel(derived, persistence, options = {}) {
   `;
 }
 
-function renderReportTab(opportunity, match) {
-  const eligibilityRequirements = match.requirementRows.filter((row) => row.mandatory).map((row) => row.label);
+function renderReportTab(company, now, opportunity, match) {
+  const requirementRows = buildRequirementPresentationRows(match.requirementRows);
+  const eligibilityRequirements = requirementRows.filter((row) => row.mandatory).map((row) => row.title);
   const nonActionable = isNonActionableDerivedStatus(opportunity.derivedStatus ?? opportunity.status);
+  const officialAccess = resolveOfficialNoticeAccess(opportunity);
+  const applicationHref = safeLinkHref(opportunity.applicationUrl);
+  const calendarEvent = buildOpportunityCalendarEvent({
+    company,
+    opportunity,
+    analysis: match,
+    now
+  });
   const preparationItems = nonActionable
     ? ["Archival review only. This notice is not open for a live submission."]
     : [
@@ -3327,9 +3323,54 @@ function renderReportTab(opportunity, match) {
           ? "Gather evidence for unresolved qualification or eligibility conditions"
           : null
       ].filter(Boolean);
-  const guaranteeLabel = describeEvidenceBackedText(opportunity, "guarantees", opportunity.guarantees, {
+  const guaranteeLabel = presentCustomerGuaranteeText(opportunity.guarantees, {
+    evidenced: (opportunity.evidence ?? []).some((item) => item.fieldKey === "guarantees"),
     fallback: "Not stated"
   });
+  const requirementCards = requirementRows.length
+    ? `<div class="requirement-list-grid">
+        ${requirementRows
+          .map(
+            (row) => `
+              <article class="requirement-card">
+                <strong>${escapeHtml(row.title)}</strong>
+                <p class="requirement-status">${escapeHtml(row.statusLabel)}</p>
+                <p>${escapeHtml(row.implication)}</p>
+              </article>
+            `
+          )
+          .join("")}
+      </div>`
+    : `<p class="empty-state">${
+        match.eligibilityStatus === "ELIGIBILITY_NOT_ASSESSED"
+          ? "Qualification requirements have not yet been retrieved from the reviewed sources."
+          : "No mandatory requirement is currently recorded in the reviewed source set."
+      }</p>`;
+  const deadlineActions = [
+    officialAccess.isPlacsp && officialAccess.searchUrl
+      ? `<button class="ghost-button" data-action="find-on-placsp" data-id="${opportunity.id}">Find on PLACSP</button>`
+      : "",
+    officialAccess.copyReferenceValue
+      ? `<button class="ghost-button" data-action="copy-reference" data-id="${opportunity.id}">Copy reference</button>`
+      : "",
+    calendarEvent.available
+      ? `<button class="ghost-button" data-action="download-calendar" data-id="${opportunity.id}">Add deadline to calendar</button>`
+      : "",
+    !officialAccess.isPlacsp && !nonActionable && applicationHref
+      ? `<a class="ghost-button" href="${escapeHtml(applicationHref)}" target="_blank" rel="noreferrer noopener">Open official application</a>`
+      : "",
+    !officialAccess.isPlacsp && officialAccess.primaryUrl
+      ? `<a class="ghost-button" href="${escapeHtml(officialAccess.primaryUrl)}" target="_blank" rel="noreferrer noopener">Open official notice</a>`
+      : "",
+    !officialAccess.isPlacsp && officialAccess.searchUrl
+      ? `<a class="ghost-button" href="${escapeHtml(officialAccess.searchUrl)}" target="_blank" rel="noreferrer noopener">Open PLACSP search</a>`
+      : "",
+    officialAccess.isPlacsp && !nonActionable && applicationHref
+      ? `<a class="ghost-button" href="${escapeHtml(applicationHref)}" target="_blank" rel="noreferrer noopener">Open official application</a>`
+      : ""
+  ]
+    .filter(Boolean)
+    .join("");
 
   return `
     ${renderDetailDisclosure(
@@ -3346,50 +3387,42 @@ function renderReportTab(opportunity, match) {
     ${renderDetailDisclosure(
       "Eligibility & blockers",
       `<ul class="tight-list">
-        ${primaryOpenIssue(match) ? `<li><strong>Next verification question:</strong> ${escapeHtml(primaryOpenIssue(match).detail)}</li>` : ""}
+        ${
+          primaryOpenIssue(match)
+            ? `<li>${escapeHtml(customerIssueStatement("Next verification question", primaryOpenIssue(match), { verificationFallback: true }))}</li>`
+            : ""
+        }
         ${
           (match.potentialHardBlockers ?? []).length
-            ? match.potentialHardBlockers.map((item) => `<li><strong>Potential hard blocker:</strong> ${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")
+            ? match.potentialHardBlockers
+                .map(
+                  (item) =>
+                    `<li>${escapeHtml(customerIssueStatement("Potential hard blocker", item, { verificationFallback: true }))}</li>`
+                )
+                .join("")
             : match.eligibilityStatus === "ELIGIBILITY_NOT_ASSESSED"
               ? "<li><strong>Potential hard blockers:</strong> Not yet assessable — qualification requirements have not been retrieved.</li>"
               : "<li>No potential hard blocker is currently recorded for the retrieved qualification set.</li>"
         }
-        ${match.blockers.length ? match.blockers.map((item) => `<li><strong>Confirmed blocker:</strong> ${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("") : ""}
-        ${match.unknowns.map((item) => `<li><strong>Important unknown:</strong> ${escapeHtml(item.title)} — ${escapeHtml(item.detail)}</li>`).join("")}
+        ${
+          match.blockers.length
+            ? match.blockers
+                .map(
+                  (item) =>
+                    `<li>${escapeHtml(customerIssueStatement("Confirmed blocker", item))}</li>`
+                )
+                .join("")
+            : ""
+        }
+        ${match.unknowns
+          .map(
+            (item) =>
+              `<li>${escapeHtml(customerIssueStatement("Important unknown", item, { verificationFallback: true }))}</li>`
+          )
+          .join("")}
       </ul>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr><th>Requirement</th><th>Status</th><th>Evidence</th><th>Why it matters</th></tr>
-          </thead>
-          <tbody>
-            ${
-              match.requirementRows.length
-                ? match.requirementRows
-                    .map(
-                      (row) => `
-                        <tr>
-                          <td>${escapeHtml(row.label)}</td>
-                          <td>${escapeHtml(requirementStatusLabel(row))}</td>
-                          <td>${escapeHtml(row.evidenceIds.join(", ") || "Not linked")}</td>
-                          <td>${escapeHtml(row.why ?? "Not provided")}</td>
-                        </tr>
-                      `
-                    )
-                    .join("")
-                : `
-                    <tr>
-                      <td>Qualification requirements</td>
-                      <td>${escapeHtml(match.eligibilityStatus === "ELIGIBILITY_NOT_ASSESSED" ? "Not yet retrieved" : "No requirement published")}</td>
-                      <td>Not linked</td>
-                      <td>${escapeHtml(match.eligibilityStatus === "ELIGIBILITY_NOT_ASSESSED" ? "The reviewed or imported sources do not yet establish the mandatory qualification set." : "No mandatory requirement is currently recorded in the reviewed source set.")}</td>
-                    </tr>
-                  `
-            }
-          </tbody>
-        </table>
-      </div>`,
-      { open: true }
+      ${requirementCards}`,
+      { open: match.eligibilityStatus === "INELIGIBLE" || match.blockers.length > 0 }
     )}
     ${renderDetailDisclosure(
       "Financial picture",
@@ -3413,13 +3446,13 @@ function renderReportTab(opportunity, match) {
         ${
           nonActionable
             ? `<li>No live submission route applies because this notice is not open.</li>`
-            : opportunity.applicationUrl
-              ? `<li><a href="${escapeHtml(opportunity.applicationUrl)}" target="_blank" rel="noreferrer noopener">Open official application</a></li>`
+            : applicationHref
+              ? `<li>Official application route is available.</li>`
               : `<li>Submission route not yet verified.</li>`
         }
         ${
-          opportunity.noticeUrl
-            ? `<li><a href="${escapeHtml(opportunity.noticeUrl)}" target="_blank" rel="noreferrer noopener">Open official notice</a></li>`
+          officialAccess.primaryUrl
+            ? `<li>Official notice / dossier link is available.</li>`
             : `<li>Official notice / dossier not yet verified.</li>`
         }
         <li>Authority contact: ${escapeHtml(
@@ -3427,8 +3460,13 @@ function renderReportTab(opportunity, match) {
             ? "No live submission contact is required for this archived notice."
             : match.primaryContact?.name ?? "Contact not found in reviewed/imported sources"
         )}</li>
-        <li>Reference: ${escapeHtml(opportunity.referenceNumber ?? opportunity.id)}</li>
-      </ul>`
+        <li>Reference: ${escapeHtml(officialAccess.referenceNumber || opportunity.referenceNumber || "Not stated")}</li>
+      </ul>
+      ${deadlineActions ? `<div class="detail-link-row">${deadlineActions}</div>` : ""}
+      <p class="detail-inline-note">${escapeHtml(calendarEvent.available ? calendarEvent.customerNote : calendarEvent.reason)}</p>
+      ${officialAccess.helpNote ? `<p class="detail-inline-note">${escapeHtml(officialAccess.helpNote)}</p>` : ""}`
+      ,
+      { open: true }
     )}
     ${renderDetailDisclosure(
       "Requirements",
@@ -3476,6 +3514,7 @@ function renderReportTab(opportunity, match) {
 }
 
 function renderEvidenceTab(opportunity, match) {
+  const requirementAuditRows = buildRequirementEvidenceAuditRows(match.requirementRows, opportunity.evidence ?? []);
   return `
     <div class="detail-section">
       <h4>Confidence shield</h4>
@@ -3498,6 +3537,34 @@ function renderEvidenceTab(opportunity, match) {
       </div>
     </div>
     <div class="detail-section">
+      <h4>Requirement audit</h4>
+      ${
+        requirementAuditRows.length
+          ? `<div class="evidence-audit-list">
+              ${requirementAuditRows
+                .map(
+                  (row) => `
+                    <article class="requirement-audit-card">
+                      <strong>${escapeHtml(row.title)}</strong>
+                      <p><strong>Status:</strong> ${escapeHtml(row.statusLabel)}</p>
+                      <p><strong>Raw requirement:</strong> ${escapeHtml(row.rawLabel)}</p>
+                      <p><strong>Implication:</strong> ${escapeHtml(row.implication)}</p>
+                      <p><strong>Evidence IDs:</strong> ${escapeHtml(row.evidenceIds.join(", ") || "Not linked")}</p>
+                      <p><strong>Source paths:</strong> ${escapeHtml(row.sourcePaths.join(" · ") || "Not recorded")}</p>
+                      ${
+                        row.excerpts.length
+                          ? `<p><strong>Linked excerpts:</strong> ${escapeHtml(row.excerpts.join(" | "))}</p>`
+                          : ""
+                      }
+                    </article>
+                  `
+                )
+                .join("")}
+            </div>`
+          : `<p class="empty-state">No structured qualification requirement audit is attached to this opportunity.</p>`
+      }
+    </div>
+    <div class="detail-section">
       <h4>Evidence ledger</h4>
       <div class="evidence-list">
         ${
@@ -3508,7 +3575,11 @@ function renderEvidenceTab(opportunity, match) {
                     <article class="evidence-item">
                       <strong>${escapeHtml(item.fieldKey)}</strong>
                       <p>${escapeHtml(item.excerpt)}</p>
-                      <small>Confidence ${Math.round((item.confidence ?? 0.8) * 100)}%</small>
+                      <small>
+                        Confidence ${Math.round((item.confidence ?? 0.8) * 100)}%
+                        ${item.sourceId ? ` · source ${escapeHtml(item.sourceId)}` : ""}
+                        ${item.sourcePath ? ` · ${escapeHtml(item.sourcePath)}` : ""}
+                      </small>
                     </article>
                   `
                 )
@@ -3524,12 +3595,19 @@ function renderEvidenceTab(opportunity, match) {
           (opportunity.sources ?? []).length
             ? (opportunity.sources ?? [])
                 .map(
-                  (source) => `
-                    <li>
-                      <a href="${escapeHtml(source.url || "#")}" target="_blank" rel="noreferrer noopener">${escapeHtml(source.organisation)}</a>
-                      — ${escapeHtml(source.title)} · published ${escapeHtml(source.publishedAt)} · last checked ${escapeHtml(formatLastChecked(source.lastChecked))}
-                    </li>
-                  `
+                  (source) => {
+                    const sourceHref = safeLinkHref(source.url);
+                    return `
+                      <li>
+                        ${
+                          sourceHref
+                            ? `<a href="${escapeHtml(sourceHref)}" target="_blank" rel="noreferrer noopener">${escapeHtml(source.organisation)}</a>`
+                            : escapeHtml(source.organisation)
+                        }
+                        — ${escapeHtml(source.title)} · published ${escapeHtml(source.publishedAt)} · last checked ${escapeHtml(formatLastChecked(source.lastChecked))}
+                      </li>
+                    `;
+                  }
                 )
                 .join("")
             : "<li>No official source has been attached yet.</li>"
@@ -3541,6 +3619,7 @@ function renderEvidenceTab(opportunity, match) {
 
 function renderDebugTab(opportunity, match, aiReview, funnelMeta = null) {
   const aiRun = aiReview?.review ?? aiReview?.legacyReview ?? null;
+  const explicitLotMatches = (match.lotMatches ?? []).filter((item) => item.hasPublishedLot);
   return `
     ${
       funnelMeta
@@ -3560,6 +3639,57 @@ function renderDebugTab(opportunity, match, aiReview, funnelMeta = null) {
                     : ""
                 }
               </ul>
+            </div>
+          `
+        : ""
+    }
+    ${
+      explicitLotMatches.length > 1
+        ? `
+            <div class="detail-section">
+              <h4>Lot comparison</h4>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Lot</th>
+                      <th>Location</th>
+                      <th>Published lot value</th>
+                      <th>Capability</th>
+                      <th>Geography</th>
+                      <th>Scale</th>
+                      <th>Qualification</th>
+                      <th>Match</th>
+                      <th>Priority</th>
+                      <th>Fit</th>
+                      <th>Action</th>
+                      <th>Selected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${explicitLotMatches
+                      .map(
+                        (lotMatch) => `
+                          <tr>
+                            <td>${escapeHtml(lotMatch.lotLabel ?? lotMatch.lotId)}</td>
+                            <td>${escapeHtml(lotMatch.locationLabel || "Not stated")}</td>
+                            <td>${escapeHtml(lotMatch.displayValueLabel || "Not published")}</td>
+                            <td>${Math.round(lotMatch.dimensions?.capabilityFit ?? 0)}/100</td>
+                            <td>${Math.round(lotMatch.dimensions?.geographicFit ?? 0)}/100</td>
+                            <td>${Math.round(lotMatch.dimensions?.financialScaleFit ?? 0)}/100</td>
+                            <td>${Math.round(lotMatch.dimensions?.qualificationReadiness ?? 0)}/100</td>
+                            <td>${Math.round(lotMatch.matchScore ?? 0)}</td>
+                            <td>${Math.round(lotMatch.priorityScore ?? 0)}</td>
+                            <td>${escapeHtml(fitBandLabelOf(lotMatch))}</td>
+                            <td>${escapeHtml(actionLabelOf(lotMatch.decision?.recommendedAction))}</td>
+                            <td>${lotMatch.lotId === match.lotId ? "Selected" : ""}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
             </div>
           `
         : ""
@@ -3702,14 +3832,82 @@ function exportWorkspace(state) {
   URL.revokeObjectURL(url);
 }
 
-function downloadReport(match) {
-  const blob = new Blob([match.reportMarkdown], { type: "text/markdown" });
+function downloadReport({ company, opportunity, analysis, aiReviewState }) {
+  const reportExport = buildCustomerReportExport({
+    company,
+    opportunity,
+    analysis,
+    aiReviewState
+  });
+  const blob = new Blob([reportExport.html], { type: reportExport.mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${toSlug(match.displayTitle)}.md`;
+  anchor.download = reportExport.filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function openUrlInNewTab(value) {
+  const href = safeLinkHref(value);
+  if (!href) return false;
+
+  if (typeof globalThis.window?.open === "function") {
+    globalThis.window.open(href, "_blank", "noopener,noreferrer");
+    return true;
+  }
+
+  const doc = globalThis.document;
+  if (doc?.createElement) {
+    const anchor = doc.createElement("a");
+    anchor.href = href;
+    anchor.target = "_blank";
+    anchor.rel = "noreferrer noopener";
+    anchor.click();
+    return true;
+  }
+
+  return false;
+}
+
+async function copyTextToClipboard(value) {
+  const text = collapseWhitespace(value);
+  if (!text) return false;
+
+  try {
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await globalThis.navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Continue to the local fallbacks below.
+  }
+
+  const doc = globalThis.document;
+  if (doc?.createElement && doc.body?.appendChild && typeof doc.execCommand === "function") {
+    const textarea = doc.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "absolute";
+    textarea.style.left = "-9999px";
+    doc.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try {
+      copied = doc.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    textarea.remove();
+    if (copied) return true;
+  }
+
+  if (typeof globalThis.window?.prompt === "function") {
+    globalThis.window.prompt("Copy tender reference", text);
+    return true;
+  }
+
+  return false;
 }
 
 function answerQuestion(store, company, questionId, answer) {
@@ -4394,8 +4592,81 @@ export function startApp(root, { runtime, store, services = {} }) {
     }
 
     if (action === "download-report") {
-      const match = derived.portfolio.analysed.find((item) => item.opportunityId === button.dataset.id) ?? null;
-      if (match) downloadReport(match);
+      const opportunityId = button.dataset.id;
+      const analysis = derived.portfolio.analysed.find((item) => item.opportunityId === opportunityId) ?? null;
+      const opportunity = state.opportunities.find((item) => item.id === opportunityId) ?? null;
+      const aiReviewState = opportunity
+        ? derived.aiReviewByOpportunity.get(opportunity.id) ?? null
+        : null;
+      if (analysis && opportunity) {
+        downloadReport({
+          company: derived.company,
+          opportunity,
+          analysis,
+          aiReviewState
+        });
+      }
+      return;
+    }
+
+    if (action === "download-calendar") {
+      const opportunityId = button.dataset.id;
+      const analysis = derived.portfolio.analysed.find((item) => item.opportunityId === opportunityId) ?? null;
+      const opportunity = state.opportunities.find((item) => item.id === opportunityId) ?? null;
+      if (!analysis || !opportunity) return;
+      const result = downloadCalendarEvent({
+        company: derived.company,
+        opportunity,
+        analysis,
+        now: derived.now
+      });
+      if (!result.ok) {
+        setMessage(result.reason, "warn", "compact");
+        render();
+      }
+      return;
+    }
+
+    if (action === "copy-reference") {
+      const opportunity = state.opportunities.find((item) => item.id === button.dataset.id) ?? null;
+      const officialAccess = opportunity ? resolveOfficialNoticeAccess(opportunity) : null;
+      const reference = officialAccess?.copyReferenceValue ?? null;
+      if (!reference) {
+        setMessage("Official reference not available to copy.", "warn", "compact");
+        render();
+        return;
+      }
+      const copied = await copyTextToClipboard(reference);
+      setMessage(
+        copied ? "Tender reference copied." : `Copy the tender reference manually: ${reference}`,
+        copied ? "success" : "warn",
+        "compact"
+      );
+      render();
+      return;
+    }
+
+    if (action === "find-on-placsp") {
+      const opportunity = state.opportunities.find((item) => item.id === button.dataset.id) ?? null;
+      const officialAccess = opportunity ? resolveOfficialNoticeAccess(opportunity) : null;
+      const searchUrl = officialAccess?.searchUrl ?? null;
+      if (!searchUrl) {
+        setMessage("PLACSP search is not available for this opportunity.", "warn", "compact");
+        render();
+        return;
+      }
+
+      const reference = officialAccess?.copyReferenceValue ?? null;
+      const copied = reference ? await copyTextToClipboard(reference) : false;
+      openUrlInNewTab(searchUrl);
+
+      const message = reference
+        ? copied
+          ? `Reference ${reference} copied. Paste it into the Expediente field on PLACSP.`
+          : `Open PLACSP search and paste reference ${reference} into the Expediente field.`
+        : "Open PLACSP search and use the buyer/title details shown in OportuneX.";
+      setMessage(message, copied || !reference ? "success" : "warn", "compact");
+      render();
       return;
     }
 

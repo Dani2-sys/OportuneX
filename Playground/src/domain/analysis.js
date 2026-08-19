@@ -5,6 +5,7 @@ import { extractClaims } from "./evidence.js";
 import { evaluateEligibility } from "./eligibility.js";
 import { buildFinancialPicture } from "./financial-picture.js";
 import { formatMoney, moneyToMajor } from "./money.js";
+import { countExplicitPublishedLots, resolveLotOrOpportunityLocation } from "./opportunity-scope.js";
 import { assembleDimensions, computeScores, deriveRecommendation } from "./scoring.js";
 import { scoreCapabilityFit } from "./semantic.js";
 import { executiveVerdict, generateReportMarkdown } from "./report.js";
@@ -337,6 +338,8 @@ function buildAnalysedItem(outcome) {
     requirementRows: bestMatch.requirementRows,
     primaryContact: bestMatch.primaryContact,
     rankLabel: bestMatch.rankLabel,
+    publishedLotCount: bestMatch.publishedLotCount,
+    lotMatches: outcome.lotMatches,
     claims: bestMatch.claims,
     reportMarkdown: bestMatch.reportMarkdown,
     lotLabel: bestMatch.lotLabel,
@@ -363,6 +366,8 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
   const financialPicture = buildFinancialPicture(opportunity, lot);
   const primaryContact = choosePrimaryContact(opportunity);
   const hasPublishedLot = hasExplicitPublishedLot(lot);
+  const publishedLotCount = countExplicitPublishedLots(opportunity);
+  const resolvedLocation = resolveLotOrOpportunityLocation(lot, opportunity);
   const match = {
     id: `${company.id}:${opportunity.id}:${lot.id}`,
     opportunityId: opportunity.id,
@@ -379,6 +384,7 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     priorityScore: scores.priorityScore,
     displayTitle: lot.title !== opportunity.title ? `${opportunity.title} — ${lot.title}` : opportunity.title,
     hasPublishedLot,
+    publishedLotCount,
     lotLabel: hasPublishedLot ? lot.title : null,
     scopeLabel: hasPublishedLot ? lot.title : "Whole opportunity",
     displayValueLabel: financialPicture.primaryLine?.displayValue ?? formatMoney(displayValue),
@@ -386,7 +392,7 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     financialPicture,
     analysisNow: now.toISOString(),
     locationLabel:
-      lot.location?.display ??
+      resolvedLocation?.display ??
       opportunity.location?.display ??
       [opportunity.location?.municipality, opportunity.location?.province].filter(Boolean).join(", "),
     deadlineLabel: opportunity.deadline?.sourceText ?? "Not published",

@@ -190,7 +190,7 @@ test("saved AI verification persists through reload, keeps company scope, and do
     clickAction(reloadRoot, { action: "select", id: "opp-efficiency-grant" });
 
     assert.equal(reloadCalls, 0);
-    assert.match(reloadRoot.innerHTML, /AI reviewed/);
+    assert.match(reloadRoot.innerHTML, /Assessment confirmed/);
     assert.match(reloadRoot.innerHTML, /Re-run AI verification/);
     assert.match(reloadRoot.innerHTML, new RegExp(escapeRegExp(reviewedAtLabel)));
   } finally {
@@ -258,7 +258,7 @@ test("Saved route reuses the existing AI verification flow, stays scoped by comp
     clickAction(reloadRoot, { action: "select", id: "opp-efficiency-grant" });
 
     assert.equal(reloadCalls, 0);
-    assert.match(reloadRoot.innerHTML, /AI reviewed/);
+    assert.match(reloadRoot.innerHTML, /Assessment confirmed/);
     assert.match(reloadRoot.innerHTML, /Saved review for Instalaciones Demo Tarragona SL\./);
 
     changeActiveCompany(reloadRoot, "company-alt");
@@ -272,7 +272,7 @@ test("Saved route reuses the existing AI verification flow, stays scoped by comp
     clickAction(reloadRoot, { action: "route", route: "saved" });
     clickAction(reloadRoot, { action: "select", id: "opp-efficiency-grant" });
 
-    assert.match(reloadRoot.innerHTML, /AI reviewed/);
+    assert.match(reloadRoot.innerHTML, /Assessment confirmed/);
     assert.match(reloadRoot.innerHTML, /Saved review for Instalaciones Demo Tarragona SL\./);
   } finally {
     globalThis.window = previousWindow;
@@ -405,7 +405,103 @@ test("AI verify button disables during an active request and blocks duplicate ca
     await pendingVerification;
 
     assert.doesNotMatch(root.innerHTML, /Verifying\.\.\./);
-    assert.match(root.innerHTML, /AI reviewed/);
+    assert.match(root.innerHTML, /Assessment confirmed/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("current AI verification renders company-focused advisory sections without customer-facing debugger copy", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+
+    startApp(root, {
+      runtime: createRuntime(),
+      store,
+      services: {
+        async runAiVerification() {
+          return createAiVerificationResponse({
+            review_status: "needs_review",
+            confidence: "high",
+            warnings: [],
+            disagreements: [],
+            notes: "For Instalaciones Demo Tarragona, the published classification and specialist evidence still need review before relying on this opportunity."
+          });
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+    await clickAction(root, { action: "ai-verify", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /Follow-up required/);
+    assert.match(root.innerHTML, /What this means for Instalaciones Demo Tarragona/);
+    assert.match(root.innerHTML, /What Instalaciones Demo Tarragona should verify next/);
+    assert.match(root.innerHTML, /No new material warning was identified\./);
+    assert.match(root.innerHTML, /What changed after verification/);
+    assert.match(root.innerHTML, /No material change to the OportuneX assessment\./);
+    assert.match(root.innerHTML, /Detailed AI reasoning/);
+    assert.doesNotMatch(root.innerHTML, /Open Analysis Debugger/);
+    assert.doesNotMatch(root.innerHTML, /Review status: Needs review/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("current AI verification keeps the first customer layer short while leaving full warnings and disagreements in detailed reasoning", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const root = createRoot();
+
+    startApp(root, {
+      runtime: createRuntime(),
+      store,
+      services: {
+        async runAiVerification() {
+          return createAiVerificationResponse({
+            review_status: "needs_review",
+            confidence: "high",
+            warnings: [
+              "Verify the specialist classification before relying on this opportunity.",
+              "Confirm the current insurance certificate and coverage amount.",
+              "Check the comparable public reference depth for the last three years.",
+              "Review the official submission route before acting.",
+              "Validate the lead contractor role and consortium assumptions."
+            ],
+            disagreements: [
+              "The deterministic public-reference confidence looks slightly stronger than the evidence actually supports.",
+              "The official dossier appears less complete than the current evidence shield suggests.",
+              "The company-scope specialist coverage still needs a narrower review.",
+              "The deterministic blocker ordering should keep the classification issue higher.",
+              "The financial confidence looks slightly more optimistic than the dossier warrants."
+            ],
+            notes:
+              "For Instalaciones Demo Tarragona, specialist qualification still needs review before this result can be trusted. The official submission route also needs checking. Commercial assumptions should be re-validated against the latest dossier."
+          });
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+    await clickAction(root, { action: "ai-verify", id: "opp-efficiency-grant" });
+
+    assert.match(root.innerHTML, /What this means for Instalaciones Demo Tarragona/);
+    assert.match(root.innerHTML, /\+ 1 more in Detailed AI reasoning\./);
+    assert.match(root.innerHTML, /What changed after verification/);
+    assert.match(root.innerHTML, /\+ 2 more in Detailed AI reasoning\./);
+    assert.match(root.innerHTML, /Detailed AI reasoning/);
+    assert.match(root.innerHTML, /Validate the lead contractor role and consortium assumptions\./);
+    assert.match(root.innerHTML, /The company-scope specialist coverage still needs a narrower review\./);
+    assert.doesNotMatch(root.innerHTML, /Action unchanged|Fit unchanged/);
   } finally {
     globalThis.window = previousWindow;
   }
@@ -433,7 +529,7 @@ test("customer detail hides raw AI JSON while the debugger still exposes it", as
     clickAction(root, { action: "select", id: "opp-efficiency-grant" });
     await clickAction(root, { action: "ai-verify", id: "opp-efficiency-grant" });
 
-    assert.match(root.innerHTML, /AI review/);
+    assert.match(root.innerHTML, /AI verification/);
     assert.doesNotMatch(root.innerHTML, /"review_status"/);
     assert.doesNotMatch(root.innerHTML, /"provider"/);
 
@@ -442,6 +538,73 @@ test("customer detail hides raw AI JSON while the debugger still exposes it", as
 
     assert.match(root.innerHTML, /&quot;review_status&quot;: &quot;accepted&quot;/);
     assert.match(root.innerHTML, /&quot;provider&quot;: &quot;openai&quot;/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("saved v2 AI reviews stay stale until an explicit rerun writes a current v3 company-scoped review", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const initialState = createDemoState();
+    initialState.aiRuns = [
+      {
+        id: "ai-run-v2",
+        scope: "company_opportunity",
+        companyId: "company-demo",
+        opportunityId: "opp-efficiency-grant",
+        completedAt: "2026-08-12T08:30:00.000Z",
+        result: {
+          review_status: "accepted",
+          confidence: "medium",
+          warnings: [],
+          disagreements: [],
+          corrected_action: null,
+          corrected_fit_band: null,
+          notes: "Older prompt-version review."
+        },
+        contextFingerprint: "ai-context-v2:deadbeef",
+        sourceNoticeVersionId: "bdns-version:opp-efficiency-grant"
+      }
+    ];
+
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    store.replace(initialState);
+    const root = createRoot();
+    let verificationCalls = 0;
+
+    startApp(root, {
+      runtime: createRuntime(),
+      store,
+      services: {
+        async runAiVerification() {
+          verificationCalls += 1;
+          return createAiVerificationResponse({
+            notes: "Fresh v3 company-scoped review."
+          });
+        }
+      }
+    });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-efficiency-grant" });
+
+    assert.equal(verificationCalls, 0);
+    assert.match(root.innerHTML, /Saved review may be outdated/);
+    assert.match(root.innerHTML, /Re-run AI verification/);
+    assert.doesNotMatch(root.innerHTML, /Older prompt-version review\./);
+
+    await clickAction(root, { action: "ai-verify", id: "opp-efficiency-grant" });
+
+    const savedRun = getAiRunByPair(store, "company-demo", "opp-efficiency-grant");
+    assert.equal(verificationCalls, 1);
+    assert.ok(savedRun);
+    assert.match(savedRun.contextFingerprint, /^ai-context-v3:/);
+    assert.match(root.innerHTML, /Assessment confirmed/);
+    assert.match(root.innerHTML, /Fresh v3 company-scoped review\./);
+    assert.doesNotMatch(root.innerHTML, /Saved review may be outdated/);
   } finally {
     globalThis.window = previousWindow;
   }
