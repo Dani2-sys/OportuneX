@@ -15,7 +15,7 @@ import {
 import { formatApplicationDate, getApplicationNow, getEvaluationNow } from "./clock.js";
 import { demoCompany } from "./data/demo.js";
 import { evaluationFixtures } from "./data/evaluation-fixtures.js";
-import { analyzePortfolio } from "./domain/analysis.js";
+import { analyzePortfolio, diagnoseLotSelection } from "./domain/analysis.js";
 import {
   buildCustomerReportExport,
   buildRequirementEvidenceAuditRows,
@@ -59,12 +59,24 @@ import { formatDeadline, formatLastChecked, isNonActionableDerivedStatus, parseS
 import { formatMoney, parseMoneyInput } from "./domain/money.js";
 import { buildOpportunityCalendarEvent, downloadCalendarEvent } from "./domain/opportunity-calendar.js";
 import {
+  getSelectedExplicitLotId,
+  getSelectedExplicitLotLabel,
+  hasSelectedExplicitLot
+} from "./domain/opportunity-scope.js";
+import {
   createAiVerificationContextFingerprint,
   extractPersistedAiVerificationResult,
   getAiReviewState,
   listScopedAiReviewsForCompany,
   upsertScopedAiReview
 } from "./domain/ai-review.js";
+import {
+  buildVerificationCustomerSummary,
+  buildVerificationPacket,
+  formatVerificationChange,
+  isVerificationResultV4
+} from "./domain/verification-protocol.js";
+import { normalizeAiVerificationResponse } from "./domain/ai-verification-response.js";
 import { importCompanyProfileFromJson } from "./services/company-importer.js";
 import { importOpportunityFromJson, importOpportunityFromText, validateOpportunityImport } from "./services/importer.js";
 import { runBdnsSync } from "./services/bdns-sync.js";
@@ -284,6 +296,154 @@ function companyStatusTone(status) {
   if (status === "public_verified" || status === "public_reported") return "neutral";
   if (status === "inferred" || status === "unknown") return "warn";
   return "bad";
+}
+
+function debugSelectionScopeLabel(scopeType) {
+  if (scopeType === "explicit_published_lot") return "Explicit published lot";
+  if (scopeType === "whole_opportunity") return "Whole opportunity";
+  return scopeType ? scopeType.replace(/_/g, " ") : "Not stated";
+}
+
+function debugValueLabel(value, fallback = "None") {
+  return value == null || value === "" ? fallback : String(value);
+}
+
+function debugEligibilityLabel(status) {
+  const label = ELIGIBILITY_COPY[status] ?? status ?? "Not stated";
+  return label.replace(/^Eligibility\s+/i, "") || "Not stated";
+}
+
+function renderLotTitleDisclosure(title, conciseLabel) {
+  const normalizedTitle = collapseWhitespace(title);
+  const normalizedLabel = collapseWhitespace(conciseLabel);
+  if (!normalizedTitle || normalizedTitle === normalizedLabel) return "";
+  return `
+    <details class="title-disclosure">
+      <summary>Full official lot title</summary>
+      <p>${escapeHtml(normalizedTitle)}</p>
+    </details>
+  `;
+}
+
+function buildLotSelectionDebuggerState(opportunity, match, verificationPacket) {
+  const diagnostic = diagnoseLotSelection(opportunity, match);
+  const explicitLotIds = new Set(
+    (opportunity?.lots ?? [])
+      .filter((lot) => lot && !lot.synthetic && lot.id != null)
+      .map((lot) => String(lot.id))
+  );
+  const analysisBestMatchLotId = diagnostic.bestMatchLotId ?? null;
+  const analysisLotId = match?.lotId ?? null;
+  const canonicalSelectedLotId = diagnostic.selectedLotId ?? null;
+  const customerPresentedLotId = hasSelectedExplicitLot(match) ? getSelectedExplicitLotId(match) : null;
+  const verificationPacketSelectedLotId = verificationPacket?.selected_assessment?.selected_lot_id ?? null;
+  const selectedRowCount = diagnostic.lots.filter((item) => item.selectedBestMatch).length;
+  const analysisBestMatchIsExplicit = explicitLotIds.has(String(analysisBestMatchLotId ?? ""));
+  const analysisLotIsExplicit = explicitLotIds.has(String(analysisLotId ?? ""));
+  const selectionConsistent = canonicalSelectedLotId
+    ? analysisBestMatchLotId === canonicalSelectedLotId &&
+      analysisLotId === canonicalSelectedLotId &&
+      customerPresentedLotId === canonicalSelectedLotId &&
+      verificationPacketSelectedLotId === canonicalSelectedLotId &&
+      selectedRowCount === 1
+    : customerPresentedLotId == null &&
+      verificationPacketSelectedLotId == null &&
+      selectedRowCount === 0 &&
+      !analysisBestMatchIsExplicit &&
+      !analysisLotIsExplicit;
+
+  return {
+    diagnostic,
+    selectionConsistent,
+    rows: [
+      ["analysis.bestMatch lot id", analysisBestMatchLotId],
+      ["analysis.lotId", analysisLotId],
+      ["canonical selected explicit lot id", canonicalSelectedLotId],
+      ["customer-presented lot id", customerPresentedLotId],
+      ["verification-packet selected lot id", verificationPacketSelectedLotId]
+    ]
+  };
+}
+
+function renderLotComparisonDebuggerSection(opportunity, match, verificationPacket) {
+  const { diagnostic, selectionConsistent, rows } = buildLotSelectionDebuggerState(opportunity, match, verificationPacket);
+  return `
+    <div class="detail-section" data-debug-section="lot-comparison" data-selection-consistent="${selectionConsistent ? "true" : "false"}">
+      <div class="card-topline">
+        <h4>Lot comparison</h4>
+        ${pill(selectionConsistent ? "Selection state consistent" : "Selection state inconsistent", selectionConsistent ? "good" : "bad")}
+      </div>
+      <ul class="tight-list">
+        <li><strong>Procedure:</strong> ${escapeHtml(debugValueLabel(diagnostic.procedureTitle))}</li>
+        <li><strong>Selected explicit lot:</strong> ${escapeHtml(debugValueLabel(diagnostic.selectedLot))}</li>
+        <li><strong>Selection reason:</strong> ${escapeHtml(debugValueLabel(diagnostic.selectionReason, "Not stated"))}</li>
+        <li><strong>Selection scope:</strong> ${escapeHtml(debugSelectionScopeLabel(diagnostic.scopeType))}</li>
+      </ul>
+      <div class="detail-subsection">
+        <h5>Consistency check</h5>
+        <ul class="tight-list">
+          ${rows
+            .map(
+              ([label, value]) => `
+                <li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(debugValueLabel(value))}</li>
+              `
+            )
+            .join("")}
+        </ul>
+      </div>
+      ${
+        diagnostic.lots.length
+          ? `
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Lot</th>
+                      <th>Coverage</th>
+                      <th>Capability</th>
+                      <th>Geography</th>
+                      <th>Scale</th>
+                      <th>Qualification</th>
+                      <th>Eligibility</th>
+                      <th>Match</th>
+                      <th>Priority</th>
+                      <th>Fit</th>
+                      <th>Action</th>
+                      <th>Selected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${diagnostic.lots
+                      .map(
+                        (lot) => `
+                          <tr data-lot-id="${escapeHtml(lot.lotId)}">
+                            <td>
+                              <strong>${escapeHtml(lot.conciseLabel ?? lot.title ?? lot.lotId ?? "Unknown lot")}</strong>
+                              ${renderLotTitleDisclosure(lot.fullTitle, lot.conciseLabel ?? lot.title ?? lot.lotId)}
+                            </td>
+                            <td>${escapeHtml(lot.coverageLabel ?? lot.location ?? "Not stated")}</td>
+                            <td>${Math.round(lot.capabilityFit ?? 0)}/100</td>
+                            <td>${Math.round(lot.geographicFit ?? 0)}/100</td>
+                            <td>${Math.round(lot.financialScaleFit ?? 0)}/100</td>
+                            <td>${Math.round(lot.qualificationReadiness ?? 0)}/100</td>
+                            <td title="${escapeHtml(lot.eligibilityStatus ?? "Not stated")}">${escapeHtml(debugEligibilityLabel(lot.eligibilityStatus))}</td>
+                            <td>${Math.round(lot.matchScore ?? 0)}</td>
+                            <td>${Math.round(lot.priorityScore ?? 0)}</td>
+                            <td>${escapeHtml(fitBandLabelOf(lot))}</td>
+                            <td>${escapeHtml(actionLabelOf(lot.recommendedAction))}</td>
+                            <td>${lot.selectedBestMatch ? "Selected" : ""}</td>
+                          </tr>
+                        `
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            `
+          : `<p class="empty-state">No explicit published lots for this opportunity.</p>`
+      }
+    </div>
+  `;
 }
 
 function getAiStatusMeta(ai = {}) {
@@ -724,6 +884,13 @@ function safeLinkHref(value) {
 }
 
 function buildAiReviewChangeItems(result = {}, match) {
+  if (isVerificationResultV4(result)) {
+    return buildVerificationCustomerSummary(result, match)
+      .correction_changes
+      .map((change) => formatVerificationChange(change))
+      .filter(Boolean);
+  }
+
   const items = [];
   const currentAction = match?.decision?.recommendedAction?.code ?? null;
   const currentFitBand = fitBandOf(match);
@@ -745,7 +912,9 @@ function buildAiReviewChangeItems(result = {}, match) {
 
 function aiReviewStatusMeta(aiReview) {
   const record = aiReview?.review ?? null;
-  const reviewStatus = record?.result?.review_status ?? null;
+  const reviewStatus = isVerificationResultV4(record?.result)
+    ? record?.result?.derived_review_status ?? null
+    : record?.result?.review_status ?? null;
 
   if (aiReview?.status === "current" && record) {
     return {
@@ -788,14 +957,45 @@ function aiReviewResult(result = {}) {
 function aiReviewSummary(aiReview, match, persistence, company) {
   const statusMeta = aiReviewStatusMeta(aiReview);
   const record = aiReview?.review ?? null;
-  const summary = aiReviewResult(record?.result ?? {});
   const notePreview =
-    summary.notes.match(/[^.!?]+[.!?]?/g)?.slice(0, 3).join(" ").trim() ?? summary.notes;
+    collapseWhitespace(record?.result?.advisory_summary ?? record?.result?.notes ?? "")
+      .match(/[^.!?]+[.!?]?/g)?.slice(0, 3).join(" ").trim() ??
+    collapseWhitespace(record?.result?.advisory_summary ?? record?.result?.notes ?? "");
   const savedMode =
     persistence?.status === "available"
       ? "Saved locally"
       : "Saved for this session only because browser persistence is unavailable";
 
+  if (isVerificationResultV4(record?.result)) {
+    const verification = buildVerificationCustomerSummary(record.result, match, company);
+    return {
+      statusMeta,
+      companyName: verification.company_name,
+      completedAt: record?.completedAt ? formatDate(record.completedAt, { includeTime: true }) : null,
+      changeItems: verification.correction_changes.map((change) => formatVerificationChange(change)).filter(Boolean),
+      changeFallback:
+        verification.grouped_findings.headline_needs_verification.length ||
+        verification.grouped_findings.headline_challenged.length ||
+        verification.strongest_counterfactual?.would_change_fit_or_action
+          ? "No direct fit, action, or lot correction was proposed. Verification identified issues that still require follow-up."
+          : "No material correction to the OportuneX assessment.",
+      notePreview,
+      savedMode,
+      protocolVersion: verification.protocol_version,
+      reviewStatus: getCustomerAiReviewLabel(verification.derived_review_status),
+      reviewTone: getCustomerAiReviewTone(verification.derived_review_status),
+      confidence: aiConfidenceLabel(verification.confidence),
+      advisorySummary: verification.advisory_summary,
+      nextActions: verification.next_actions,
+      confirmedFindings: verification.grouped_findings.headline_confirmed,
+      unresolvedFindings: verification.grouped_findings.headline_needs_verification,
+      challengedFindings: verification.grouped_findings.headline_challenged,
+      detailedFindingGroups: verification.grouped_findings,
+      strongestCounterfactual: verification.strongest_counterfactual
+    };
+  }
+
+  const summary = aiReviewResult(record?.result ?? {});
   return {
     statusMeta,
     companyName: getCompanyDisplayName(company),
@@ -1504,6 +1704,35 @@ function renderAiReviewList(items = [], fallback, { limit = null } = {}) {
   `;
 }
 
+function renderAiFindingClaims(items = [], fallback, { limit = null } = {}) {
+  const claims = items.map((item) => item?.claim).filter(Boolean);
+  return renderAiReviewList(claims, fallback, { limit });
+}
+
+function renderDetailedFindingGroup(title, items = []) {
+  if (!items.length) return "";
+  return `
+    <div class="detail-section">
+      <h4>${escapeHtml(title)}</h4>
+      <div class="evidence-audit-list">
+        ${items
+          .map(
+            (item) => `
+              <article class="requirement-audit-card">
+                <strong>${escapeHtml(item.claim)}</strong>
+                <p><strong>Category:</strong> ${escapeHtml(item.category)}</p>
+                <p><strong>Why it matters:</strong> ${escapeHtml(item.company_impact)}</p>
+                ${item.recommended_follow_up ? `<p><strong>Recommended follow-up:</strong> ${escapeHtml(item.recommended_follow_up)}</p>` : ""}
+                ${item.evidence_ref_display?.length ? `<p><strong>Evidence refs:</strong> ${escapeHtml(item.evidence_ref_display.join(", "))}</p>` : item.evidence_refs?.length ? `<p><strong>Evidence refs:</strong> ${escapeHtml(item.evidence_refs.join(", "))}</p>` : ""}
+              </article>
+            `
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderAiVerificationHero(opportunity, match, aiReview, persistence, company, showTechnicalPath = false) {
   const busy = isAiReviewBusy(company?.id, opportunity.id);
   const summary = aiReviewSummary(aiReview, match, persistence, company);
@@ -1513,6 +1742,7 @@ function renderAiVerificationHero(opportunity, match, aiReview, persistence, com
   const staleReview = aiReview?.status === "stale" && record;
   const confidenceToneClass =
     summary.reviewTone === "bad" ? "bad" : summary.reviewTone === "warn" ? "warn" : "good";
+  const currentV4Review = currentReview && summary.protocolVersion === "v4";
 
   return `
     <div class="ai-review-card ai-review-hero tone-${escapeHtml(summary.statusMeta.tone)}">
@@ -1548,7 +1778,80 @@ function renderAiVerificationHero(opportunity, match, aiReview, persistence, com
                 <p class="ai-review-trust">Use this verification to focus your review. Confirm final eligibility, documents and submission details in the official notice before acting.</p>
               </div>
             `
-          : currentReview
+          : currentV4Review
+            ? `
+                <div class="ai-review-grid">
+                  <section class="ai-review-panel">
+                    <h5>What this means for ${escapeHtml(summary.companyName)}</h5>
+                    <p class="ai-review-important">${escapeHtml(summary.advisorySummary || "No additional AI advisory summary was recorded.")}</p>
+                  </section>
+                  <section class="ai-review-panel">
+                    <h5>What ${escapeHtml(summary.companyName)} should verify next</h5>
+                    ${renderAiReviewList(summary.nextActions, "No follow-up action was recorded.", { limit: 4 })}
+                  </section>
+                  <section class="ai-review-panel">
+                    <h5>What verification found</h5>
+                    ${
+                      summary.confirmedFindings.length
+                        ? `<h6>Confirmed</h6>${renderAiFindingClaims(summary.confirmedFindings, "No confirmed finding was recorded.", { limit: 3 })}`
+                        : ""
+                    }
+                    ${
+                      summary.unresolvedFindings.length
+                        ? `<h6>Needs verification</h6>${renderAiFindingClaims(summary.unresolvedFindings, "No unresolved finding was recorded.", { limit: 3 })}`
+                        : ""
+                    }
+                    ${
+                      summary.challengedFindings.length
+                        ? `<h6>Challenged</h6>${renderAiFindingClaims(summary.challengedFindings, "No challenged finding was recorded.", { limit: 3 })}`
+                        : ""
+                    }
+                    ${
+                      !summary.confirmedFindings.length &&
+                      !summary.unresolvedFindings.length &&
+                      !summary.challengedFindings.length
+                        ? `<p class="ai-review-empty">No structured finding was recorded.</p>`
+                        : ""
+                    }
+                  </section>
+                  <section class="ai-review-panel">
+                    <h5>What changed after verification</h5>
+                    ${renderAiReviewList(summary.changeItems, summary.changeFallback ?? "No material correction to the OportuneX assessment.", { limit: 3 })}
+                  </section>
+                </div>
+                ${renderDetailDisclosure(
+                  "Detailed AI reasoning",
+                  `
+                    ${renderDetailedFindingGroup("Confirmed", summary.detailedFindingGroups.confirmed)}
+                    ${renderDetailedFindingGroup("Unresolved", summary.detailedFindingGroups.unresolved)}
+                    ${renderDetailedFindingGroup("Disagreements", summary.detailedFindingGroups.disagreed)}
+                    ${renderDetailedFindingGroup("Critical contradictions", summary.detailedFindingGroups.critical_contradictions)}
+                    ${
+                      summary.strongestCounterfactual?.exists
+                        ? `
+                            <div class="detail-section">
+                              <h4>Strongest counterfactual</h4>
+                              <p>${escapeHtml(summary.strongestCounterfactual.description || "No description recorded.")}</p>
+                              ${summary.strongestCounterfactual.evidence_ref_display?.length ? `<p><strong>Evidence refs:</strong> ${escapeHtml(summary.strongestCounterfactual.evidence_ref_display.join(", "))}</p>` : summary.strongestCounterfactual.evidence_refs?.length ? `<p><strong>Evidence refs:</strong> ${escapeHtml(summary.strongestCounterfactual.evidence_refs.join(", "))}</p>` : ""}
+                              <p><strong>Would change fit or action:</strong> ${summary.strongestCounterfactual.would_change_fit_or_action ? "Yes" : "No"}</p>
+                            </div>
+                          `
+                        : ""
+                    }
+                    <ul class="tight-list ai-review-detail-list">
+                      <li>Verification completed${summary.completedAt ? ` · ${escapeHtml(summary.completedAt)}` : ""}</li>
+                      <li>Customer review status: ${escapeHtml(summary.reviewStatus)}</li>
+                      <li>Confidence: ${escapeHtml(summary.confidence)}</li>
+                      <li>Confirmed findings: ${escapeHtml(String(summary.detailedFindingGroups.confirmed.length))}</li>
+                      <li>Unresolved findings: ${escapeHtml(String(summary.detailedFindingGroups.unresolved.length))}</li>
+                      <li>Disagreements: ${escapeHtml(String(summary.detailedFindingGroups.disagreed.length))}</li>
+                      <li>Critical contradictions: ${escapeHtml(String(summary.detailedFindingGroups.critical_contradictions.length))}</li>
+                    </ul>
+                  `
+                )}
+                <p class="ai-review-trust">Use this verification to focus your review. Confirm final eligibility, documents and submission details in the official notice before acting.</p>
+              `
+            : currentReview
             ? `
                 <div class="ai-review-grid">
                   <section class="ai-review-panel">
@@ -3226,6 +3529,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
   const decision = buildDecisionSummary(selected);
   const headerAlert = buildDecisionHeaderAlert(selected, decision);
   const tabs = showDebugger ? ["report", "evidence", "debug"] : ["report", "evidence"];
+  const verificationPacket = showDebugger ? buildVerificationPacket(derived.company, raw, selected) : null;
   const authorityLabel =
     raw.contractingAuthority ||
     raw.issuingOrganisation ||
@@ -3235,9 +3539,10 @@ function renderDetailPanel(derived, persistence, options = {}) {
     raw.type === "grant" && selected.financialPicture?.primaryLine?.id === "programme_budget"
       ? "Programme budget"
       : "Published opportunity value";
+  const selectedLotLabel = getSelectedExplicitLotLabel(selected);
   const lotContextNote =
-    selected.publishedLotCount > 1 && selected.lotLabel
-      ? `Assessment shown for ${selected.lotLabel} · ${selected.publishedLotCount} published lots in this contract`
+    selected.publishedLotCount > 1 && hasSelectedExplicitLot(selected) && selectedLotLabel
+      ? `Assessment shown for ${selectedLotLabel} · ${selected.publishedLotCount} published lots in this contract`
       : "";
 
   return `
@@ -3257,6 +3562,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
               : ""
           }
         </div>
+        ${showDebugger ? renderLotComparisonDebuggerSection(raw, selected, verificationPacket) : ""}
         <div class="decision-hero">
           <div class="decision-hero-main">
             <span class="decision-kicker">Recommended action</span>
@@ -3295,7 +3601,7 @@ function renderDetailPanel(derived, persistence, options = {}) {
             ? renderReportTab(derived.company, derived.now, raw, selected)
             : uiState.detailTab === "evidence"
               ? renderEvidenceTab(raw, selected)
-              : renderDebugTab(raw, selected, derived.selectedAiReview, derived.funnel.byOpportunityId?.[selected.opportunityId] ?? null)
+              : renderDebugTab(derived.company, raw, selected, derived.selectedAiReview, derived.funnel.byOpportunityId?.[selected.opportunityId] ?? null, verificationPacket)
         }
       </article>
     </aside>
@@ -3617,9 +3923,9 @@ function renderEvidenceTab(opportunity, match) {
   `;
 }
 
-function renderDebugTab(opportunity, match, aiReview, funnelMeta = null) {
+function renderDebugTab(company, opportunity, match, aiReview, funnelMeta = null, verificationPacket = null) {
   const aiRun = aiReview?.review ?? aiReview?.legacyReview ?? null;
-  const explicitLotMatches = (match.lotMatches ?? []).filter((item) => item.hasPublishedLot);
+  const packet = verificationPacket ?? buildVerificationPacket(company, opportunity, match);
   return `
     ${
       funnelMeta
@@ -3639,57 +3945,6 @@ function renderDebugTab(opportunity, match, aiReview, funnelMeta = null) {
                     : ""
                 }
               </ul>
-            </div>
-          `
-        : ""
-    }
-    ${
-      explicitLotMatches.length > 1
-        ? `
-            <div class="detail-section">
-              <h4>Lot comparison</h4>
-              <div class="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Lot</th>
-                      <th>Location</th>
-                      <th>Published lot value</th>
-                      <th>Capability</th>
-                      <th>Geography</th>
-                      <th>Scale</th>
-                      <th>Qualification</th>
-                      <th>Match</th>
-                      <th>Priority</th>
-                      <th>Fit</th>
-                      <th>Action</th>
-                      <th>Selected</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${explicitLotMatches
-                      .map(
-                        (lotMatch) => `
-                          <tr>
-                            <td>${escapeHtml(lotMatch.lotLabel ?? lotMatch.lotId)}</td>
-                            <td>${escapeHtml(lotMatch.locationLabel || "Not stated")}</td>
-                            <td>${escapeHtml(lotMatch.displayValueLabel || "Not published")}</td>
-                            <td>${Math.round(lotMatch.dimensions?.capabilityFit ?? 0)}/100</td>
-                            <td>${Math.round(lotMatch.dimensions?.geographicFit ?? 0)}/100</td>
-                            <td>${Math.round(lotMatch.dimensions?.financialScaleFit ?? 0)}/100</td>
-                            <td>${Math.round(lotMatch.dimensions?.qualificationReadiness ?? 0)}/100</td>
-                            <td>${Math.round(lotMatch.matchScore ?? 0)}</td>
-                            <td>${Math.round(lotMatch.priorityScore ?? 0)}</td>
-                            <td>${escapeHtml(fitBandLabelOf(lotMatch))}</td>
-                            <td>${escapeHtml(actionLabelOf(lotMatch.decision?.recommendedAction))}</td>
-                            <td>${lotMatch.lotId === match.lotId ? "Selected" : ""}</td>
-                          </tr>
-                        `
-                      )
-                      .join("")}
-                  </tbody>
-                </table>
-              </div>
             </div>
           `
         : ""
@@ -3738,6 +3993,13 @@ function renderDebugTab(opportunity, match, aiReview, funnelMeta = null) {
             `
           : `<p>No AI verification run stored yet. The deterministic engine remains the source of truth in Phase 0.</p>`
       }
+    </div>
+    <div class="detail-section">
+      <h4>Verification packet</h4>
+      <details>
+        <summary>Inspect current V4 verification packet</summary>
+        <pre class="debug-pre">${escapeHtml(JSON.stringify(packet, null, 2))}</pre>
+      </details>
     </div>
   `;
 }
@@ -4686,11 +4948,12 @@ export function startApp(root, { runtime, store, services = {} }) {
       setMessage("Running AI verification pass...");
       render();
       try {
-        const result = await aiVerificationService({
+        const response = await aiVerificationService({
           company: derived.company,
           opportunity,
           analysis: match
         });
+        const result = normalizeAiVerificationResponse(response);
         syncRuntimeAi(runtime, result.aiRuntime);
         const completedAt = new Date().toISOString();
         const contextFingerprint = createAiVerificationContextFingerprint(derived.company, opportunity, match);
@@ -4715,6 +4978,9 @@ export function startApp(root, { runtime, store, services = {} }) {
         );
       } catch (error) {
         syncRuntimeAi(runtime, error.aiRuntime);
+        if (error?.adminMessage) {
+          console.error("[AI verification]", error.adminMessage);
+        }
         setMessage(error.message, "error");
       } finally {
         uiState.aiBusyKey = null;

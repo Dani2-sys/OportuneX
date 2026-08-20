@@ -6,6 +6,12 @@ import {
 } from "../config.js";
 import { formatDeadline } from "./deadline.js";
 import { escapeHtml, formatDate, toSlug } from "../utils.js";
+import {
+  buildVerificationCustomerSummary,
+  formatVerificationChange,
+  isVerificationResultV4
+} from "./verification-protocol.js";
+import { getSelectedExplicitLotLabel, hasSelectedExplicitLot } from "./opportunity-scope.js";
 
 export const CUSTOMER_AI_REVIEW_LABELS = {
   accepted: "Assessment confirmed",
@@ -75,6 +81,16 @@ function trimPresentationText(text) {
   return collapseWhitespace(text).replace(/^[\s:;,.()-]+|[\s:;,.()-]+$/g, "");
 }
 
+function verificationChangeFallbackMessage(summary) {
+  const hasMaterialFollowUp =
+    (summary.grouped_findings?.headline_needs_verification?.length ?? 0) > 0 ||
+    (summary.grouped_findings?.headline_challenged?.length ?? 0) > 0 ||
+    Boolean(summary.strongest_counterfactual?.would_change_fit_or_action);
+  return hasMaterialFollowUp
+    ? "No direct fit, action, or lot correction was proposed. Verification identified issues that still require follow-up."
+    : "No material correction to the OportuneX assessment.";
+}
+
 function normalizeSectionReferenceText(text) {
   const cleaned = trimPresentationText(text);
   if (!cleaned) return "";
@@ -131,6 +147,74 @@ function renderHtmlAiSummary(aiReviewState, analysis, companyName) {
   }
 
   const result = record.result ?? {};
+  if (isVerificationResultV4(result)) {
+    const summary = buildVerificationCustomerSummary(result, analysis, { legalName: companyName, tradingName: companyName });
+    const changes = summary.correction_changes.map((change) => formatVerificationChange(change)).filter(Boolean);
+    return `
+      <section>
+        <h2>AI verification</h2>
+        <p><strong>${escapeHtml(CUSTOMER_AI_REVIEW_LABELS[summary.derived_review_status] ?? "Verification completed")}</strong> · ${escapeHtml(confidenceLabel(summary.confidence))} confidence</p>
+        <h3>What this means for ${escapeHtml(companyName)}</h3>
+        <p>${escapeHtml(summary.advisory_summary || "No additional AI advisory summary was recorded.")}</p>
+        <h3>What ${escapeHtml(companyName)} should verify next</h3>
+        ${renderList(summary.next_actions, "No follow-up action was recorded.")}
+        ${
+          summary.grouped_findings.headline_confirmed.length
+            ? `<h3>Confirmed</h3>${renderList(summary.grouped_findings.headline_confirmed.map((item) => item.claim), "No confirmed finding was recorded.")}`
+            : ""
+        }
+        ${
+          summary.grouped_findings.headline_needs_verification.length
+            ? `<h3>Needs verification</h3>${renderList(summary.grouped_findings.headline_needs_verification.map((item) => item.claim), "No unresolved finding was recorded.")}`
+            : ""
+        }
+        ${
+          summary.grouped_findings.headline_challenged.length
+            ? `<h3>Challenged</h3>${renderList(summary.grouped_findings.headline_challenged.map((item) => item.claim), "No challenged finding was recorded.")}`
+            : ""
+        }
+        <h3>What changed after verification</h3>
+        ${renderList(changes, verificationChangeFallbackMessage(summary))}
+        ${detailDisclosure(
+          "Detailed AI reasoning",
+          `
+            ${[
+              ["Confirmed", summary.grouped_findings.confirmed],
+              ["Unresolved", summary.grouped_findings.unresolved],
+              ["Disagreements", summary.grouped_findings.disagreed],
+              ["Critical contradictions", summary.grouped_findings.critical_contradictions]
+            ]
+              .filter(([, items]) => items.length)
+              .map(
+                ([label, items]) => `
+                  <h3>${escapeHtml(label)}</h3>
+                  <ul>${items
+                    .map(
+                      (item) =>
+                        `<li><strong>${escapeHtml(item.claim)}</strong><br>${escapeHtml(item.company_impact)}${
+                          item.recommended_follow_up ? `<br>Follow-up: ${escapeHtml(item.recommended_follow_up)}` : ""
+                        }${item.evidence_ref_display?.length ? `<br>Evidence refs: ${escapeHtml(item.evidence_ref_display.join(", "))}` : item.evidence_refs?.length ? `<br>Evidence refs: ${escapeHtml(item.evidence_refs.join(", "))}` : ""}</li>`
+                    )
+                    .join("")}</ul>
+                `
+              )
+              .join("")}
+            ${
+              summary.strongest_counterfactual?.exists
+                ? `
+                    <h3>Strongest counterfactual</h3>
+                    <p>${escapeHtml(summary.strongest_counterfactual.description || "No description recorded.")}</p>
+                    ${summary.strongest_counterfactual.evidence_ref_display?.length ? `<p>Evidence refs: ${escapeHtml(summary.strongest_counterfactual.evidence_ref_display.join(", "))}</p>` : summary.strongest_counterfactual.evidence_refs?.length ? `<p>Evidence refs: ${escapeHtml(summary.strongest_counterfactual.evidence_refs.join(", "))}</p>` : ""}
+                  `
+                : ""
+            }
+          `
+        )}
+        <p class="trust-note">Use this verification to focus your review. Confirm final eligibility, documents and submission details in the official notice before acting.</p>
+      </section>
+    `;
+  }
+
   const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
   const disagreements = Array.isArray(result.disagreements) ? result.disagreements.filter(Boolean) : [];
   const notePreview =
@@ -517,6 +601,7 @@ export function buildCustomerReportExport({
   const officialAccess = resolveOfficialNoticeAccess(opportunity);
   const fit = fitBandLabel(analysis);
   const action = actionLabel(analysis);
+  const selectedLotLabel = getSelectedExplicitLotLabel(analysis);
   const primaryIssue = analysis.potentialHardBlockers?.[0] ?? analysis.unknowns?.[0] ?? analysis.blockers?.[0] ?? null;
   const decisionReason = presentCustomerDecisionText(
     analysis.decision?.mainReason ?? analysis.executiveVerdict ?? "No summary recorded.",
@@ -709,11 +794,11 @@ export function buildCustomerReportExport({
           <span class="pill ${escapeHtml(analysis.decision?.recommendedAction?.code === "DO_NOT_PURSUE" ? "bad" : analysis.decision?.recommendedAction?.code === "VERIFY_BEFORE_DECIDING" ? "warn" : "good")}">${escapeHtml(action)}</span>
           <span class="pill neutral">${escapeHtml(fit)} · ${escapeHtml(String(analysis.matchScore ?? analysis.priorityScore ?? 0))}% match</span>
           ${
-            analysis.hasPublishedLot && analysis.lotLabel
+            hasSelectedExplicitLot(analysis) && selectedLotLabel
               ? `<span class="pill neutral">${escapeHtml(
                   analysis.publishedLotCount > 1
-                    ? `Assessment shown for ${analysis.lotLabel} · ${analysis.publishedLotCount} published lots in this contract`
-                    : `Assessment shown for ${analysis.lotLabel}`
+                    ? `Assessment shown for ${selectedLotLabel} · ${analysis.publishedLotCount} published lots in this contract`
+                    : `Assessment shown for ${selectedLotLabel}`
                 )}</span>`
               : ""
           }

@@ -1,4 +1,7 @@
-const FINGERPRINT_VERSION = "ai-context-v3";
+import { isVerificationResultV4 } from "./verification-protocol.js";
+import { isSelectedExplicitLot } from "./opportunity-scope.js";
+
+const FINGERPRINT_VERSION = "ai-context-v4";
 
 const VOLATILE_METADATA_KEYS = new Set([
   "lastChecked",
@@ -504,7 +507,33 @@ function buildAnalysisContext(analysis = {}, companySourceIdMap, opportunitySour
     unknowns: normalizeIssueItems(analysis.unknowns, context, ["analysis", "unknowns"]),
     risks: normalizeIssueItems(analysis.risks, context, ["analysis", "risks"]),
     requirementRows: normalizeSemanticValue(analysis.requirementRows, context, ["analysis", "requirementRows"]),
-    financialPicture: normalizeFinancialPicture(analysis.financialPicture)
+    financialPicture: normalizeFinancialPicture(analysis.financialPicture),
+    lotComparison: sortAndDedupe(
+      sanitizeArray(analysis.lotMatches)
+        .filter((item) => item?.hasPublishedLot && item?.lotId)
+        .map((item) =>
+          compactObject({
+            lotId: normalizeText(item.lotId, null),
+            lotLabel: normalizeText(item.lotLabel, null),
+            fitBand: normalizeText(item.fitBand ?? item.recommendationClass, null),
+            matchScore: normalizeNumber(item.matchScore),
+            priorityScore: normalizeNumber(item.priorityScore),
+            recommendedAction: normalizeText(item.decision?.recommendedAction?.code, null),
+            selectedBestMatch: isSelectedExplicitLot(analysis, item),
+            dimensions: compactObject({
+              capabilityFit: normalizeNumber(item.dimensions?.capabilityFit),
+              geographicFit: normalizeNumber(item.dimensions?.geographicFit),
+              financialScaleFit: normalizeNumber(item.dimensions?.financialScaleFit),
+              qualificationReadiness: normalizeNumber(item.dimensions?.qualificationReadiness)
+            }),
+            confidenceShield: compactObject({
+              dataConfidence: normalizeText(item.confidenceShield?.dataConfidence, null),
+              decisionConfidence: normalizeText(item.confidenceShield?.decisionConfidence, null)
+            })
+          })
+        )
+        .filter((item) => !isEmptyNormalizedValue(item))
+    )
   });
 }
 
@@ -526,6 +555,22 @@ export function createAiVerificationContextFingerprint(company, opportunity, ana
 }
 
 export function extractPersistedAiVerificationResult(result = {}) {
+  if (isVerificationResultV4(result)) {
+    return {
+      provider: normalizeText(result.provider, null),
+      model: normalizeText(result.model, null),
+      protocol_version: normalizeText(result.protocol_version, null),
+      derived_review_status: normalizeText(result.derived_review_status, null),
+      findings: sanitizeArray(result.findings),
+      evidence_ref_catalog: sanitizeArray(result.evidence_ref_catalog),
+      strongest_counterfactual: isPlainObject(result.strongest_counterfactual) ? result.strongest_counterfactual : null,
+      suggested_corrections: isPlainObject(result.suggested_corrections) ? result.suggested_corrections : null,
+      advisory_summary: normalizeText(result.advisory_summary, ""),
+      next_actions: sanitizeArray(result.next_actions),
+      confidence: normalizeText(result.confidence, null)
+    };
+  }
+
   return {
     provider: normalizeText(result.provider, null),
     model: normalizeText(result.model, null),

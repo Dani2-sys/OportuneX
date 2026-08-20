@@ -1,6 +1,7 @@
 import { ACTION_COPY, RECOMMENDATION_COPY } from "../config.js";
 import { escapeHtml, toSlug } from "../utils.js";
 import { SPANISH_TIME_ZONE, toUtcIso } from "./deadline.js";
+import { getSelectedExplicitLotLabel, hasSelectedExplicitLot } from "./opportunity-scope.js";
 import {
   collapseWhitespace,
   getCompanyDisplayName,
@@ -148,9 +149,10 @@ export function buildOpportunityCalendarEvent({
 
   const companyName = getCompanyDisplayName(company);
   const officialAccess = resolveOfficialNoticeAccess(opportunity);
+  const selectedLotLabel = getSelectedExplicitLotLabel(analysis) ?? "";
   const effectiveTitle = shortCalendarTitle(
     analysis?.displayTitle || opportunity?.title || "Opportunity deadline",
-    analysis?.hasPublishedLot ? analysis?.lotLabel : ""
+    selectedLotLabel
   );
   const title = `OportuneX deadline — ${effectiveTitle}`;
   const reference = officialAccess.referenceNumber || opportunity?.referenceNumber || "Not stated";
@@ -191,7 +193,7 @@ export function buildOpportunityCalendarEvent({
   const uid = [
     sanitizeUidPart(company?.id || companyName),
     sanitizeUidPart(opportunity?.id || analysis?.opportunityId || "opportunity"),
-    sanitizeUidPart(analysis?.hasPublishedLot ? analysis?.lotId || analysis?.lotLabel : "root"),
+    sanitizeUidPart(hasSelectedExplicitLot(analysis) ? analysis?.lotId || selectedLotLabel : "root"),
     sanitizeUidPart(`${deadline.date}-${deadline.time || "all-day"}`)
   ]
     .filter(Boolean)

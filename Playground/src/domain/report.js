@@ -1,6 +1,7 @@
 import { RECOMMENDATION_COPY, ELIGIBILITY_COPY, OPPORTUNITY_TYPES } from "../config.js";
 import { isNonActionableDerivedStatus, daysRemaining, formatDeadline } from "./deadline.js";
 import { describeEvidenceBackedText } from "./evidence.js";
+import { hasSelectedExplicitLot } from "./opportunity-scope.js";
 
 function actionSentence(analysis) {
   const code = analysis.decision?.recommendedAction?.code;
@@ -167,7 +168,7 @@ export function generateReportMarkdown(company, opportunity, analysis, now = new
 **Decision confidence:** ${analysis.confidenceShield.label}<br>
 **Company profile basis:** ${company.profileMode === "prospect" ? "Prospect profile built from public information" : "Company-confirmed profile"}<br>
 **Type:** ${OPPORTUNITY_TYPES[opportunity.type]}<br>
-${analysis.hasPublishedLot ? `**Relevant lot:** ${analysis.lotLabel}<br>` : `**Scope:** Whole opportunity<br>`}
+${hasSelectedExplicitLot(analysis) ? `**Relevant lot:** ${analysis.lotLabel}<br>` : `**Scope:** Whole opportunity<br>`}
 **Published value:** ${analysis.displayValueLabel}<br>
 **Location:** ${analysis.locationLabel}  
 **Deadline:** ${formatDeadline(opportunity.deadline)}  

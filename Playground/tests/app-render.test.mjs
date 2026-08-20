@@ -17,6 +17,7 @@ import {
 } from "../src/services/source-opportunity-cache.js";
 import { createStore } from "../src/state/store.js";
 import { escapeHtml } from "../src/utils.js";
+import { createFourLotSelectionFixture, createLiveLotDifferentiationFixture } from "./helpers/lot-selection-fixture.mjs";
 
 const MINIMAL_PROSPECT_JSON = JSON.stringify({
   id: "company-test-import",
@@ -1160,28 +1161,126 @@ test("customer report disclosures stay short on first load while keeping the mai
   }
 });
 
-test("multi-lot customer detail shows the selected-lot context while lot comparison stays debug-only", () => {
+test("analysis debugger exposes the current multi-lot comparison while customer detail keeps it debug-only", () => {
   const previousWindow = globalThis.window;
   globalThis.window = {};
 
   try {
     const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const { company, opportunity } = createFourLotSelectionFixture();
+    const nextState = createDemoState();
+    nextState.companyProfiles = [company];
+    nextState.activeCompanyId = company.id;
+    nextState.opportunities = [opportunity];
+    store.replace(nextState);
+    const analysis = analyzePortfolio(company, [opportunity], DEFAULT_RUNTIME, new Date()).analysed[0];
     const root = createRoot();
     startApp(root, { runtime: DEFAULT_RUNTIME, store });
 
     clickAction(root, { action: "route", route: "opportunities" });
-    clickAction(root, { action: "scope", scope: "needs_verification" });
-    clickAction(root, { action: "select", id: "opp-multi-lot-framework" });
+    clickAction(root, { action: "select", id: opportunity.id });
 
     assert.match(root.innerHTML, /Assessment shown for .*published lots in this contract/);
     assert.doesNotMatch(root.innerHTML, /Lot comparison/);
+    assert.doesNotMatch(root.innerHTML, /Selection state consistent/);
 
     clickAction(root, { action: "route", route: "debug" });
-    clickAction(root, { action: "select", id: "opp-multi-lot-framework" });
 
     assert.match(root.innerHTML, /Lot comparison/);
-    assert.match(root.innerHTML, /Published lot value/);
+    assert.match(root.innerHTML, /Selection state consistent/);
+    assert.match(root.innerHTML, /Procedure:<\/strong>\s*HVAC and building-maintenance services across mutual sites/);
+    assert.match(root.innerHTML, /Selected explicit lot:<\/strong>\s*Lote I — Castellon and Valencia/);
+    assert.match(root.innerHTML, /Selection reason:<\/strong>\s*(Highest priority score|Stable tie-break: source order)/);
+    assert.match(root.innerHTML, /Selection scope:<\/strong>\s*Explicit published lot/);
+    assert.match(root.innerHTML, /analysis\.bestMatch lot id:<\/strong>\s*lot-i-hvac/);
+    assert.match(root.innerHTML, /analysis\.lotId:<\/strong>\s*lot-i-hvac/);
+    assert.match(root.innerHTML, /canonical selected explicit lot id:<\/strong>\s*lot-i-hvac/);
+    assert.match(root.innerHTML, /customer-presented lot id:<\/strong>\s*lot-i-hvac/);
+    assert.match(root.innerHTML, /verification-packet selected lot id:<\/strong>\s*lot-i-hvac/);
+    assert.match(root.innerHTML, /<th>Coverage<\/th>/);
+    assert.match(root.innerHTML, /Lote I/);
+    assert.match(root.innerHTML, /Lote II/);
+    assert.match(root.innerHTML, /Lote III/);
+    assert.match(root.innerHTML, /Lote IV/);
     assert.match(root.innerHTML, /Selected/);
+    assert.equal((root.innerHTML.match(/<td>Selected<\/td>/g) ?? []).length, 1);
+    assert.match(
+      root.innerHTML,
+      new RegExp(`<tr data-lot-id="${escapeRegExp(analysis.selectedLotId)}"[\\s\\S]*?<td>Selected<\\/td>`)
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("analysis debugger compacts long shared lot titles while preserving full official lot titles in developer details", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const { company, opportunity } = createLiveLotDifferentiationFixture();
+    const nextState = createDemoState();
+    nextState.companyProfiles = [company];
+    nextState.activeCompanyId = company.id;
+    nextState.opportunities = [opportunity];
+    store.replace(nextState);
+
+    const analysis = analyzePortfolio(company, [opportunity], DEFAULT_RUNTIME, new Date()).analysed[0];
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: opportunity.id });
+
+    assert.doesNotMatch(root.innerHTML, /Lot comparison/);
+
+    clickAction(root, { action: "route", route: "debug" });
+
+    assert.match(root.innerHTML, /Lot comparison/);
+    assert.equal((root.innerHTML.match(/Procedure:<\/strong>/g) ?? []).length, 1);
+    assert.match(root.innerHTML, /Selection reason:<\/strong>\s*Highest priority score/);
+    assert.match(root.innerHTML, /<th>Coverage<\/th>/);
+    assert.match(root.innerHTML, /<td>\s*<strong>Lote I<\/strong>/);
+    assert.match(root.innerHTML, /<td>\s*<strong>Lote II<\/strong>/);
+    assert.match(root.innerHTML, /<td>\s*<strong>Lote III<\/strong>/);
+    assert.match(root.innerHTML, /<td>\s*<strong>Lote IV<\/strong>/);
+    assert.doesNotMatch(root.innerHTML, /<td>\s*<strong>Servicio de mantenimiento de las instalaciones de climatizacion/);
+    assert.match(root.innerHTML, /Full official lot title/);
+    assert.match(root.innerHTML, /title="ELIGIBILITY_UNCLEAR">Unclear<\/td>/);
+    assert.equal((root.innerHTML.match(/<td>Selected<\/td>/g) ?? []).length, 1);
+    assert.match(
+      root.innerHTML,
+      new RegExp(`<tr data-lot-id="${escapeRegExp(analysis.selectedLotId)}"[\\s\\S]*?<td>Selected<\\/td>`)
+    );
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("analysis debugger shows a concise whole-opportunity lot state when no explicit published lots exist", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {};
+
+  try {
+    const store = createStore({ storageAdapter: createMockStorageAdapter() });
+    const nextState = createDemoState();
+    nextState.opportunities = [makeNoLotUiOpportunity()];
+    store.replace(nextState);
+
+    const root = createRoot();
+    startApp(root, { runtime: DEFAULT_RUNTIME, store });
+
+    clickAction(root, { action: "route", route: "opportunities" });
+    clickAction(root, { action: "select", id: "opp-ui-no-published-lots" });
+    clickAction(root, { action: "route", route: "debug" });
+
+    assert.match(root.innerHTML, /Lot comparison/);
+    assert.match(root.innerHTML, /Selection state consistent/);
+    assert.match(root.innerHTML, /Selected explicit lot:<\/strong>\s*None/);
+    assert.match(root.innerHTML, /Selection scope:<\/strong>\s*Whole opportunity/);
+    assert.match(root.innerHTML, /No explicit published lots for this opportunity\./);
+    assert.equal((root.innerHTML.match(/<td>Selected<\/td>/g) ?? []).length, 0);
   } finally {
     globalThis.window = previousWindow;
   }

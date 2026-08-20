@@ -1,12 +1,21 @@
 import { RECOMMENDATION_COPY } from "../config.js";
 import { compareDesc } from "../utils.js";
+import { getCompanyCapabilities } from "./company-profile.js";
 import { daysRemaining, deriveStatus, isActiveDerivedStatus, isNonActionableDerivedStatus } from "./deadline.js";
 import { extractClaims } from "./evidence.js";
 import { evaluateEligibility } from "./eligibility.js";
 import { buildFinancialPicture } from "./financial-picture.js";
 import { formatMoney, moneyToMajor } from "./money.js";
-import { countExplicitPublishedLots, resolveLotOrOpportunityLocation } from "./opportunity-scope.js";
-import { assembleDimensions, computeScores, deriveRecommendation } from "./scoring.js";
+import {
+  countExplicitPublishedLots,
+  getAnalysisScopeLabel,
+  getAnalysisScopeType,
+  getSelectedExplicitLotId,
+  getSelectedExplicitLotLabel,
+  isSelectedExplicitLot,
+  resolveLotOrOpportunityLocation
+} from "./opportunity-scope.js";
+import { assembleDimensions, computeScores, deriveRecommendation, normalizeLocationRecord } from "./scoring.js";
 import { scoreCapabilityFit } from "./semantic.js";
 import { executiveVerdict, generateReportMarkdown } from "./report.js";
 
@@ -37,6 +46,123 @@ function defaultLot(opportunity) {
 
 function hasExplicitPublishedLot(lot) {
   return Boolean(lot && !lot.synthetic);
+}
+
+function collapseDiagnosticText(value) {
+  if (value == null) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+function conciseLotDiagnosticLabel(sourceLot, lotMatch, opportunityTitle) {
+  const procedureTitle = collapseDiagnosticText(opportunityTitle);
+  const candidates = [
+    lotMatch?.lotLabel,
+    sourceLot?.id,
+    sourceLot?.title,
+    lotMatch?.lotId
+  ]
+    .map(collapseDiagnosticText)
+    .filter(Boolean)
+    .filter((value, index, items) => items.indexOf(value) === index);
+  const withoutProcedureTitle = candidates.filter((value) => value !== procedureTitle);
+  const preferred = (withoutProcedureTitle.length ? withoutProcedureTitle : candidates).find((value) => value.length <= 48);
+  return preferred ?? withoutProcedureTitle[0] ?? candidates[0] ?? "Unknown lot";
+}
+
+function summarizeRequirementForTrace(requirement = {}) {
+  return {
+    id: requirement.id ?? null,
+    label: requirement.label ?? requirement.title ?? null,
+    kind: requirement.kind ?? null,
+    mandatory: Boolean(requirement.mandatory),
+    gating: requirement.gating ?? null
+  };
+}
+
+export function deriveLotSelectionReason(analysis = {}) {
+  const selectionSource = getSelectedExplicitLotId(analysis) ? analysis : (analysis?.bestMatch ?? analysis);
+  const selectedLotId = getSelectedExplicitLotId(selectionSource);
+  if (!selectedLotId) return "Whole opportunity";
+  const rankedLotMatches = (analysis?.lotMatches ?? []).filter((lotMatch) => lotMatch?.hasPublishedLot && lotMatch?.lotId);
+  if (!rankedLotMatches.length) return "Selected lot not found in analysed lot matches";
+  const topPriority = rankedLotMatches[0]?.priorityScore ?? Number.NEGATIVE_INFINITY;
+  const topPriorityLots = rankedLotMatches.filter((lotMatch) => (lotMatch?.priorityScore ?? Number.NEGATIVE_INFINITY) === topPriority);
+  return topPriorityLots.length > 1 ? "Stable tie-break: source order" : "Highest priority score";
+}
+
+export function traceLotDifferentiation(company = {}, opportunity = {}, analysis = {}) {
+  const selectionSource = getSelectedExplicitLotId(analysis) ? analysis : (analysis?.bestMatch ?? analysis);
+  const explicitLots = (opportunity?.lots ?? []).filter((lot) => lot && !lot.synthetic);
+  const lotMatchesById = new Map(
+    (analysis?.lotMatches ?? [])
+      .filter((lotMatch) => lotMatch?.hasPublishedLot && lotMatch?.lotId)
+      .map((lotMatch) => [lotMatch.lotId, lotMatch])
+  );
+  const companyLocationRaw = {
+    municipality: company?.geography?.municipality ?? "",
+    province: company?.geography?.province ?? "",
+    autonomousCommunity: company?.geography?.autonomousCommunity ?? "",
+    country: company?.geography?.country ?? ""
+  };
+  const companyCapabilities = getCompanyCapabilities(company).map((capability) => ({
+    id: capability.id ?? null,
+    label: capability.label ?? null,
+    level: capability.level ?? null,
+    status: capability.status ?? null,
+    cpvPrefixes: [...(capability.cpvPrefixes ?? [])]
+  }));
+
+  return {
+    procedureTitle: opportunity?.title ?? null,
+    selectedLotId: getSelectedExplicitLotId(selectionSource),
+    selectionReason: deriveLotSelectionReason(analysis),
+    companyLocationRaw,
+    companyLocationNormalized: normalizeLocationRecord(companyLocationRaw),
+    companyCapabilities,
+    lots: explicitLots.flatMap((sourceLot) => {
+      const lotMatch = lotMatchesById.get(sourceLot.id);
+      if (!lotMatch) return [];
+      const rawLotLocation = sourceLot.location ?? {};
+      const resolvedLocation = resolveLotOrOpportunityLocation(sourceLot, opportunity);
+      return [{
+        lotId: sourceLot.id ?? lotMatch.lotId ?? null,
+        conciseLabel: conciseLotDiagnosticLabel(sourceLot, lotMatch, opportunity?.title),
+        fullTitle: collapseDiagnosticText(sourceLot.title) || null,
+        rawLotLocation,
+        rawLotLocationNormalized: normalizeLocationRecord(rawLotLocation),
+        resolvedLocation,
+        resolvedLocationNormalized: normalizeLocationRecord(resolvedLocation),
+        capabilityScopeInput: {
+          title: sourceLot.title ?? null,
+          description: sourceLot.description ?? null,
+          keywords: [...(sourceLot.keywords ?? [])],
+          cpvCodes: [...(sourceLot.cpvCodes ?? [])]
+        },
+        lotFinancialValue: sourceLot.value ?? null,
+        lotFinancialValueLabel: formatMoney(sourceLot.value),
+        qualificationRequirementsSupplied: {
+          opportunityRequirements: (opportunity.requirements ?? []).map(summarizeRequirementForTrace),
+          lotRequirements: (sourceLot.requirements ?? []).map(summarizeRequirementForTrace)
+        },
+        eligibilitySubject: {
+          title: sourceLot.title ?? null,
+          description: sourceLot.description ?? null,
+          keywords: [...(sourceLot.keywords ?? [])],
+          cpvCodes: [...(sourceLot.cpvCodes ?? [])],
+          location: resolvedLocation
+        },
+        outputs: {
+          capabilityFit: lotMatch.dimensions?.capabilityFit ?? null,
+          geographicFit: lotMatch.dimensions?.geographicFit ?? null,
+          financialScaleFit: lotMatch.dimensions?.financialScaleFit ?? null,
+          qualificationReadiness: lotMatch.dimensions?.qualificationReadiness ?? null,
+          eligibilityStatus: lotMatch.eligibilityStatus ?? null,
+          matchScore: lotMatch.matchScore ?? null,
+          priorityScore: lotMatch.priorityScore ?? null
+        }
+      }];
+    })
+  };
 }
 
 function buildAdaptiveQuestions(eligibility) {
@@ -308,13 +434,20 @@ function buildDecision(matchBand, opportunity, match) {
 function buildAnalysedItem(outcome) {
   const bestMatch = outcome.bestMatch;
   const opportunity = outcome.opportunity;
+  const selectedLotId = getSelectedExplicitLotId(bestMatch);
+  const selectedLotLabel = getSelectedExplicitLotLabel(bestMatch);
 
   return {
     opportunity,
     opportunityId: opportunity.id,
+    id: bestMatch.id,
     bestMatch,
+    lotId: bestMatch.lotId,
+    selectedLotId,
+    selectedLotLabel,
     uiCategory: bestMatch.decision.recommendedAction.bucket,
     hasPublishedLot: bestMatch.hasPublishedLot,
+    scopeType: getAnalysisScopeType(bestMatch),
     scopeLabel: bestMatch.scopeLabel,
     fitBand: bestMatch.fitBand ?? bestMatch.recommendationClass,
     fitBandLabel: bestMatch.fitBandLabel ?? bestMatch.recommendationLabel,
@@ -373,6 +506,8 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     opportunityId: opportunity.id,
     companyId: company.id,
     lotId: lot.id,
+    selectedLotId: hasPublishedLot ? lot.id : null,
+    selectedLotLabel: hasPublishedLot ? lot.title : null,
     fitBand: matchBand,
     fitBandLabel: RECOMMENDATION_COPY[matchBand],
     recommendationClass: matchBand,
@@ -386,6 +521,7 @@ function analyzeLot(company, opportunity, lot, runtime, now) {
     hasPublishedLot,
     publishedLotCount,
     lotLabel: hasPublishedLot ? lot.title : null,
+    scopeType: hasPublishedLot ? "explicit_published_lot" : "whole_opportunity",
     scopeLabel: hasPublishedLot ? lot.title : "Whole opportunity",
     displayValueLabel: financialPicture.primaryLine?.displayValue ?? formatMoney(displayValue),
     companyAmountLabel: computeCompanyAmountLabel(opportunity),
@@ -503,6 +639,75 @@ export function analyzeOpportunity(company, opportunity, runtime, now = new Date
     opportunity: enriched,
     bestMatch,
     lotMatches
+  };
+}
+
+export function diagnoseLotSelection(opportunity = {}, analysis = {}) {
+  const selectionSource = getSelectedExplicitLotId(analysis) ? analysis : (analysis?.bestMatch ?? analysis);
+  const selectedLotId = getSelectedExplicitLotId(selectionSource);
+  const selectedLotLabel = getSelectedExplicitLotLabel(selectionSource);
+  const scopeType = getAnalysisScopeType(selectionSource);
+  const explicitLots = (opportunity?.lots ?? []).filter((lot) => lot && !lot.synthetic);
+  const explicitLotsById = new Map(explicitLots.map((lot) => [lot.id, lot]));
+  const rankedLotMatches = [...(analysis?.lotMatches ?? [])]
+    .filter((lotMatch) => lotMatch?.hasPublishedLot && lotMatch?.lotId)
+    .sort(
+      (left, right) =>
+        compareDesc(left.priorityScore ?? Number.NEGATIVE_INFINITY, right.priorityScore ?? Number.NEGATIVE_INFINITY) ||
+        compareDesc(left.matchScore ?? Number.NEGATIVE_INFINITY, right.matchScore ?? Number.NEGATIVE_INFINITY) ||
+        String(left.lotId ?? "").localeCompare(String(right.lotId ?? ""))
+    );
+  const rankByLotId = new Map(rankedLotMatches.map((lotMatch, index) => [lotMatch.lotId, index + 1]));
+  const lotMatchById = new Map(rankedLotMatches.map((lotMatch) => [lotMatch.lotId, lotMatch]));
+
+  const lots = explicitLots.flatMap((sourceLot) => {
+    const lotMatch = lotMatchById.get(sourceLot.id);
+    if (!lotMatch) return [];
+    const conciseLabel = conciseLotDiagnosticLabel(sourceLot, lotMatch, opportunity?.title);
+    const resolvedLocation = resolveLotOrOpportunityLocation(sourceLot, opportunity);
+    return {
+      lotId: lotMatch.lotId,
+      title: lotMatch.lotLabel ?? sourceLot?.title ?? null,
+      conciseLabel,
+      fullTitle: collapseDiagnosticText(sourceLot?.title) || null,
+      location: lotMatch.locationLabel ?? sourceLot?.location?.display ?? null,
+      coverageLabel:
+        resolvedLocation?.display ??
+        ([resolvedLocation?.municipality, resolvedLocation?.province, resolvedLocation?.autonomousCommunity]
+          .filter(Boolean)
+          .join(", ") || null),
+      resolvedLocation,
+      resolvedLocationNormalized: normalizeLocationRecord(resolvedLocation),
+      synthetic: Boolean(sourceLot?.synthetic ?? !lotMatch.hasPublishedLot),
+      capabilityFit: lotMatch.dimensions?.capabilityFit ?? null,
+      geographicFit: lotMatch.dimensions?.geographicFit ?? null,
+      financialScaleFit: lotMatch.dimensions?.financialScaleFit ?? null,
+      qualificationReadiness: lotMatch.dimensions?.qualificationReadiness ?? null,
+      eligibilityStatus: lotMatch.eligibilityStatus ?? null,
+      evidenceDataConfidence: lotMatch.confidenceShield?.dataConfidence ?? null,
+      matchScore: lotMatch.matchScore ?? null,
+      priorityScore: lotMatch.priorityScore ?? null,
+      fitBand: lotMatch.fitBand ?? lotMatch.recommendationClass ?? null,
+      recommendedAction: lotMatch.decision?.recommendedAction?.code ?? null,
+      selectedBestMatch: isSelectedExplicitLot(selectionSource, lotMatch),
+      rank: rankByLotId.get(lotMatch.lotId) ?? null
+    };
+  });
+  const selectedLotRow = lots.find((lot) => lot.selectedBestMatch);
+  const selectedLotDisplay = selectedLotRow
+    ? `${selectedLotRow.conciseLabel}${selectedLotRow.coverageLabel ? ` — ${selectedLotRow.coverageLabel}` : ""}`
+    : selectedLotLabel;
+
+  return {
+    bestMatchId: analysis?.bestMatch?.id ?? analysis?.id ?? null,
+    bestMatchLotId: analysis?.bestMatch?.lotId ?? analysis?.lotId ?? null,
+    selectedLot: selectedLotDisplay,
+    selectedLotId,
+    procedureTitle: opportunity?.title ?? null,
+    selectionReason: deriveLotSelectionReason(analysis),
+    scope: getAnalysisScopeLabel(analysis),
+    scopeType,
+    lots
   };
 }
 

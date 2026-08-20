@@ -313,11 +313,12 @@ test("automatic PLACSP refresh waits for hydration, records automatic timestamps
     const loadResolvers = [];
     const syncCalls = [];
     let aiCalls = 0;
+    const nowMs = Date.now();
     let connectorState = createConnectorState("placsp", {
-      lastSuccessfulSyncAt: "2026-08-11T08:00:00.000Z",
-      lastFeedUpdated: "2026-08-11T07:30:00.000Z",
-      entryUpdatedWatermark: "2026-08-11T07:30:00.000Z",
-      lastReconciliationAt: "2026-08-13T07:30:00.000Z",
+      lastSuccessfulSyncAt: new Date(nowMs - 13 * 60 * 60 * 1000).toISOString(),
+      lastFeedUpdated: new Date(nowMs - 13 * 60 * 60 * 1000).toISOString(),
+      entryUpdatedWatermark: new Date(nowMs - 13 * 60 * 60 * 1000).toISOString(),
+      lastReconciliationAt: new Date(nowMs - 6 * 24 * 60 * 60 * 1000).toISOString(),
       autoRefreshEnabled: true
     });
     const sourceCache = createSourceOpportunityCache({

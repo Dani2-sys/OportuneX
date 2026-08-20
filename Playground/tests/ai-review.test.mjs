@@ -5,8 +5,10 @@ import { getEvaluationNow } from "../src/clock.js";
 import { DEFAULT_RUNTIME } from "../src/config.js";
 import { createDemoState } from "../src/data/demo.js";
 import { analyzePortfolio } from "../src/domain/analysis.js";
+import { buildAiVerificationSuccessResponse } from "../src/domain/ai-verification-response.js";
 import {
   createAiVerificationContextFingerprint,
+  extractPersistedAiVerificationResult,
   getAiReviewState,
   normalizeAiRun,
   upsertScopedAiReview
@@ -110,11 +112,73 @@ test("upsertScopedAiReview replaces an existing company-opportunity pair instead
   );
 });
 
-test("semantic AI fingerprints use the v3 version prefix", () => {
+test("semantic AI fingerprints use the v4 version prefix", () => {
   const { company, opportunity, analysis } = createFixtureContext();
   const fingerprint = createAiVerificationContextFingerprint(company, opportunity, analysis);
 
-  assert.match(fingerprint, /^ai-context-v3:/);
+  assert.match(fingerprint, /^ai-context-v4:/);
+});
+
+test("a freshly saved V4 review remains current immediately after save and does not alter its own context fingerprint", () => {
+  const { company, opportunity, analysis } = createFixtureContext();
+  const beforeFingerprint = createAiVerificationContextFingerprint(company, opportunity, analysis);
+  const response = buildAiVerificationSuccessResponse({
+    provider: "openai",
+    model: "gpt-5.6-terra",
+    derived_review_status: "accepted",
+    aiRuntime: {
+      provider: "openai",
+      status: "connected",
+      lastChecked: "2026-08-12T09:45:00.000Z",
+      lastError: null
+    },
+    result: {
+      protocol_version: "v4",
+      findings: [
+        {
+          category: "money",
+          disposition: "confirmed",
+          severity: "informational",
+          claim: "The monetary semantics remain correct.",
+          company_impact: "For the active company, the published amount can be reviewed without reinterpreting contract semantics.",
+          evidence_refs: ["analysis:money", "opportunity-evidence:ev-grant-lot-value"],
+          recommended_follow_up: null
+        }
+      ],
+      strongest_counterfactual: {
+        exists: false,
+        description: null,
+        evidence_refs: [],
+        would_change_fit_or_action: false
+      },
+      suggested_corrections: {
+        action: null,
+        fit_band: null,
+        selected_lot_id: null
+      },
+      advisory_summary: "The deterministic assessment remains materially aligned with the current verification packet.",
+      next_actions: [],
+      confidence: "high"
+    }
+  });
+
+  const aiRuns = upsertScopedAiReview([], {
+    id: "ai-run-v4",
+    companyId: company.id,
+    opportunityId: opportunity.id,
+    completedAt: "2026-08-12T09:45:00.000Z",
+    result: extractPersistedAiVerificationResult(response),
+    contextFingerprint: beforeFingerprint,
+    sourceNoticeVersionId: opportunity.sourceNoticeVersionId ?? null
+  });
+
+  const afterFingerprint = createAiVerificationContextFingerprint(company, opportunity, analysis);
+  const reviewState = getAiReviewState(aiRuns, company, opportunity, analysis);
+
+  assert.equal(afterFingerprint, beforeFingerprint);
+  assert.equal(reviewState.status, "current");
+  assert.equal(reviewState.review.result.protocol_version, "v4");
+  assert.equal(reviewState.review.result.derived_review_status, "accepted");
 });
 
 test("AI review state is scoped by company and opportunity while legacy unscoped runs stay non-authoritative", () => {

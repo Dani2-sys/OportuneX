@@ -6,9 +6,10 @@ globalThis.window = { OPORTUNEX_RUNTIME: {} };
 import { getEvaluationNow } from "../src/clock.js";
 import { getRuntimeConfig } from "../src/config.js";
 import { createDemoState } from "../src/data/demo.js";
-import { analyzeOpportunity, analyzePortfolio } from "../src/domain/analysis.js";
+import { analyzeOpportunity, analyzePortfolio, traceLotDifferentiation } from "../src/domain/analysis.js";
 import { daysRemaining, parseSpanishDate } from "../src/domain/deadline.js";
 import { createMoney } from "../src/domain/money.js";
+import { createLiveLotDifferentiationFixture } from "./helpers/lot-selection-fixture.mjs";
 
 function section(markdown, heading, nextHeading) {
   const start = markdown.indexOf(heading);
@@ -326,6 +327,63 @@ test("explicit lot locations are analysed independently and empty lot locations 
     result.bestMatch.priorityScore,
     Math.max(...result.lotMatches.map((lotMatch) => lotMatch.priorityScore))
   );
+});
+
+test("live-style lot analysis keeps lot-specific values while multilingual Catalonia aliases no longer flatten geography", () => {
+  const runtime = getRuntimeConfig();
+  const { company, opportunity, now } = createLiveLotDifferentiationFixture();
+  const result = analyzeOpportunity(company, opportunity, runtime, now);
+  const byLotId = Object.fromEntries(result.lotMatches.map((lotMatch) => [lotMatch.lotId, lotMatch]));
+
+  assert.equal(byLotId["Lote I"].displayValueLabel, "€139,136 excl. VAT");
+  assert.equal(byLotId["Lote II"].displayValueLabel, "€145,000 excl. VAT");
+  assert.equal(byLotId["Lote III"].displayValueLabel, "€121,000 excl. VAT");
+  assert.equal(byLotId["Lote IV"].displayValueLabel, "€155,000 excl. VAT");
+
+  assert.equal(byLotId["Lote I"].dimensions.capabilityFit, byLotId["Lote II"].dimensions.capabilityFit);
+  assert.equal(byLotId["Lote II"].dimensions.capabilityFit, byLotId["Lote III"].dimensions.capabilityFit);
+  assert.equal(byLotId["Lote III"].dimensions.capabilityFit, byLotId["Lote IV"].dimensions.capabilityFit);
+  assert.equal(byLotId["Lote I"].dimensions.financialScaleFit, byLotId["Lote II"].dimensions.financialScaleFit);
+  assert.equal(byLotId["Lote II"].dimensions.financialScaleFit, byLotId["Lote III"].dimensions.financialScaleFit);
+  assert.equal(byLotId["Lote III"].dimensions.financialScaleFit, byLotId["Lote IV"].dimensions.financialScaleFit);
+  assert.equal(byLotId["Lote I"].dimensions.qualificationReadiness, 0);
+  assert.equal(byLotId["Lote II"].dimensions.qualificationReadiness, 0);
+  assert.equal(byLotId["Lote III"].dimensions.qualificationReadiness, 0);
+  assert.equal(byLotId["Lote IV"].dimensions.qualificationReadiness, 0);
+
+  assert.equal(byLotId["Lote I"].dimensions.geographicFit, byLotId["Lote II"].dimensions.geographicFit);
+  assert.equal(byLotId["Lote I"].dimensions.geographicFit, byLotId["Lote IV"].dimensions.geographicFit);
+  assert.ok(byLotId["Lote III"].dimensions.geographicFit > byLotId["Lote I"].dimensions.geographicFit);
+});
+
+test("live-style lot trace exposes raw and resolved per-lot geography inputs without replacing them with the opportunity location", () => {
+  const runtime = getRuntimeConfig();
+  const { company, opportunity, now } = createLiveLotDifferentiationFixture();
+  const result = analyzeOpportunity(company, opportunity, runtime, now);
+  const trace = traceLotDifferentiation(company, opportunity, result);
+  const byLotId = Object.fromEntries(trace.lots.map((lot) => [lot.lotId, lot]));
+
+  assert.deepEqual(trace.companyLocationRaw, {
+    municipality: "Reus",
+    province: "Tarragona",
+    autonomousCommunity: "Catalonia",
+    country: ""
+  });
+  assert.deepEqual(trace.companyLocationNormalized, {
+    municipality: "reus",
+    province: "tarragona",
+    autonomousCommunity: "catalonia",
+    country: ""
+  });
+  assert.equal(byLotId["Lote I"].rawLotLocation.display, "Castellon/Castello");
+  assert.equal(byLotId["Lote II"].resolvedLocation.display, "Comunitat Valenciana");
+  assert.equal(byLotId["Lote III"].rawLotLocationNormalized.autonomousCommunity, "catalonia");
+  assert.equal(byLotId["Lote III"].resolvedLocationNormalized.autonomousCommunity, "catalonia");
+  assert.equal(byLotId["Lote IV"].resolvedLocation.display, "Espana / multiple regions");
+  assert.equal(byLotId["Lote I"].qualificationRequirementsSupplied.opportunityRequirements.length, 1);
+  assert.equal(byLotId["Lote I"].qualificationRequirementsSupplied.lotRequirements.length, 0);
+  assert.equal(byLotId["Lote I"].lotFinancialValue.amountMinor, opportunity.lots[0].value.amountMinor);
+  assert.equal(byLotId["Lote III"].outputs.eligibilityStatus, "ELIGIBILITY_UNCLEAR");
 });
 
 test("award notices keep awarded value semantics and suppress active-pursuit blockers", () => {

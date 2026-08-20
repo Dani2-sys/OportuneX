@@ -7,8 +7,36 @@ import { resolveLotOrOpportunityLocation } from "./opportunity-scope.js";
 import { buildConfidenceShield } from "./evidence.js";
 import { qualificationReadinessScore } from "./eligibility.js";
 
-function normalizeRegion(value = "") {
-  return value.toString().trim().toLowerCase();
+const LOCATION_TOKEN_ALIASES = new Map([
+  ["cataluna", "catalonia"],
+  ["catalunya", "catalonia"],
+  ["comunitat valenciana", "valencian community"],
+  ["comunidad valenciana", "valencian community"],
+  ["castello", "castellon"],
+  ["castello de la plana", "castellon de la plana"],
+  ["espana", "spain"]
+]);
+
+export function normalizeLocationToken(value = "") {
+  if (value == null) return "";
+  const normalized = value
+    .toString()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  return LOCATION_TOKEN_ALIASES.get(normalized) ?? normalized;
+}
+
+export function normalizeLocationRecord(location = {}) {
+  return {
+    municipality: normalizeLocationToken(location?.municipality),
+    province: normalizeLocationToken(location?.province),
+    autonomousCommunity: normalizeLocationToken(location?.autonomousCommunity),
+    country: normalizeLocationToken(location?.country)
+  };
 }
 
 const SPECIALIST_REQUIREMENT_KINDS = new Set([
@@ -83,17 +111,17 @@ function specialistCapabilityConfidence(semantic, eligibility) {
 }
 
 function proximityAssessment(company, opportunity) {
-  const geography = company.geography ?? {};
-  const target = opportunity.location ?? {};
+  const geography = normalizeLocationRecord(company.geography ?? {});
+  const target = normalizeLocationRecord(opportunity.location ?? {});
   const sameMunicipality =
-    normalizeRegion(geography.municipality) &&
-    normalizeRegion(geography.municipality) === normalizeRegion(target.municipality);
+    geography.municipality &&
+    geography.municipality === target.municipality;
   const sameProvince =
-    normalizeRegion(geography.province) &&
-    normalizeRegion(geography.province) === normalizeRegion(target.province);
+    geography.province &&
+    geography.province === target.province;
   const sameRegion =
-    normalizeRegion(geography.autonomousCommunity) &&
-    normalizeRegion(geography.autonomousCommunity) === normalizeRegion(target.autonomousCommunity);
+    geography.autonomousCommunity &&
+    geography.autonomousCommunity === target.autonomousCommunity;
 
   if (sameMunicipality) return { score: 96, label: "Very strong" };
   if (sameProvince) return { score: 84, label: "Strong" };
@@ -104,15 +132,15 @@ function proximityAssessment(company, opportunity) {
 
 export function assessGeographicFit(company, opportunity) {
   const geography = company.geography ?? {};
-  const target = opportunity.location ?? {};
+  const target = normalizeLocationRecord(opportunity.location ?? {});
   const proximity = proximityAssessment(company, opportunity);
   const radius = getFactValue(getCompanyFact(company, "preferredWorkingRadiusKm"));
-  const acceptedRegions = (geography.acceptedRegions ?? []).map(normalizeRegion);
-  const excludedRegions = (geography.excludedRegions ?? []).map(normalizeRegion);
+  const acceptedRegions = (geography.acceptedRegions ?? []).map(normalizeLocationToken);
+  const excludedRegions = (geography.excludedRegions ?? []).map(normalizeLocationToken);
   const targetRegions = [
-    normalizeRegion(target.municipality),
-    normalizeRegion(target.province),
-    normalizeRegion(target.autonomousCommunity)
+    target.municipality,
+    target.province,
+    target.autonomousCommunity
   ].filter(Boolean);
 
   const excluded = targetRegions.some((region) => excludedRegions.includes(region));
